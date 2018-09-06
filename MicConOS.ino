@@ -30,13 +30,12 @@
 #include <SD.h>
 #include <UTFT.h>
 #include <PS2Keyboard.h>
-#include <Wire.h>
 #include <RTClib.h>
 #include <MemoryFree.h>
 char exe_file_name[256];//current executable, 255 for name and path, and 1 for null terminator
 char work_file_name[256];//file with which the program works
 int8_t exe_code;//code returned by exe()
-int8_t delta = 0;//the number of bytes to jump after executing the instruction
+int8_t delta = 4;//length of command, 1..4
 int8_t data[4];//a place for pre-loading from a file operation code and the three following bytes
 uint8_t BL = 64;//brightness of the backlight
 int16_t registers[256];
@@ -52,8 +51,8 @@ UTFT LCD(ILI9486, 38, 39, 40, 41);
 RTC_DS3231 rtc;
 extern uint8_t BigFont[];
 const unsigned int VGA_COLORS[16] = {VGA_BLACK, VGA_WHITE, VGA_RED, VGA_GREEN, VGA_BLUE, VGA_SILVER, VGA_GRAY, VGA_MAROON, VGA_YELLOW, VGA_OLIVE, VGA_LIME, VGA_AQUA, VGA_TEAL, VGA_NAVY, VGA_FUCHSIA, VGA_PURPLE};
-int16_t dbytes(const int8_t &a, const int8_t &b) {
-  return (((int16_t)a) << 8) + b;
+inline uint16_t dbytes(const int8_t a, const int8_t b) {
+  return ((uint16_t)a << 8) | b;
 }
 void setc8(const char &k) {
   char c[2] = {k, 0};
@@ -80,15 +79,15 @@ inline void echoln(const char* s, const uint8_t len) {
   echo(s, len);
   setc8('\n');
 }
-void setc16(const int16_t &k) {
+inline void setc16(const int16_t k) {
   char s[6];
   itoa(k, s, 10);
   echo(s, strlen(s));
 }
-inline void setf8(const int8_t &u) {
+inline void setf8(const int8_t u) {
   work_file.write(u);
 }
-inline void setf16(const int16_t &u) {
+inline void setf16(const int16_t u) {
   setf8(u >> 8);
   setf8((u << 8) >> 8);
 }
@@ -123,34 +122,42 @@ void getstr(char* str, const uint8_t &len = 255) { //len - length of the string 
   while (keyboard.available())
     keyboard.read();
 }
-void getc16(int16_t &u) {
+inline void getc16(int16_t u) {
   char s[6];
   getstr(s, 5);
   u = (int16_t)atoi(s);
 }
-void getc8(int16_t &u) {
+inline void getc8(int16_t u) {
   char s[2];
   getstr(s, 1);
   u = s[0];
 }
 inline void getf8(int16_t u) {
-  if (work_file.available())
-    u = work_file.read();
-  else
-    u = 0;
+  u = work_file.available() ? work_file.read() : 0;
 }
-void getf16(int16_t &u) {//if there is one byte left in the file, it will be returned as the big one (xxxxxxxx00000000)!
+inline void getf16(int16_t u) {//if there is one byte left in the file, it will be returned as the big one (xxxxxxxx00000000)!
   int16_t a, b;
   getf8(a);
   getf8(b);
   u = dbytes(a, b);
 }
 uint8_t exe() {
-  int8_t opcode = data[0];
+  uint8_t opcode = (data[0] << 1) >> 1;
   int16_t swpbuf;
-  if (opcode > 128)
-    opcode -= 128;
-  delta = 0;
+  int16_t arg2 = 0;
+  if (data[0] >> 7) {
+    if (opcode >= 37 && opcode <= 43)
+      arg2 = dbytes(data[1], data[2]);
+    else
+      arg2 = dbytes(data[2], data[3]);
+    delta = 3;
+  } else {
+    if (opcode >= 37 && opcode <= 43)
+      arg2 = registers[data[1]];
+    else
+      arg2 = registers[data[2]];
+    delta = 4;
+  }
   switch (opcode) {
     case 0:
       delta = 1;
@@ -172,6 +179,7 @@ uint8_t exe() {
       LCD.clrScr();
       cursorX = 0;
       cursorY = 0;
+      delta = 1;
       break;
     case 5:
       swpbuf = registers[data[1]];
@@ -180,384 +188,150 @@ uint8_t exe() {
       delta = 3;
       break;
     case 6:
-      if (data[0] >= 128) {
-        registers[data[1]] += registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] += dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] += arg2;
       break;
     case 7:
-      if (data[0] >= 128) {
-        registers[data[1]] -= registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] -= dbytes(data[2], data[3]);
-        delta = 4;
-      }
-      break;
+      registers[data[1]] -= arg2;
     case 8:
-      if (data[0] >= 128) {
-        registers[data[1]] *= registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] *= dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] *= arg2;
       break;
     case 9:
-      if (data[0] >= 128) {
-        if (registers[data[2]] == 0)
-          return division_by_zero;
-        registers[data[1]] /= registers[data[2]];
-        delta = 3;
-      } else {
-        if (dbytes(data[2], data[3] == 0))
-          return division_by_zero;
-        registers[data[1]] /= dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      if (arg2 == 0) return division_by_zero;
+      registers[data[1]] /= arg2;
       break;
     case 10:
-      if (data[0] >= 128) {
-        if (registers[data[2]] == 0)
-          return division_by_zero;
-        registers[data[1]] %= registers[data[2]];
-        delta = 3;
-      } else {
-        if (dbytes(data[2], data[3] == 0))
-          return division_by_zero;
-        registers[data[1]] %= dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      if (arg2 == 0)
+        return division_by_zero;
+      registers[data[1]] %= arg2;
       break;
     case 11:
-      if (data[0] >= 128) {
-        registers[data[1]] = pow(registers[data[1]], registers[data[2]]);
-        delta = 3;
-      } else {
-        registers[data[1]] = pow(registers[data[1]], dbytes(data[2], data[3]));
-        delta = 4;
-      }
+      registers[data[1]] = pow(registers[data[1]], arg2);
       break;
     case 12:
-      if (data[0] >= 128) {
-        registers[data[1]] = registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] = dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] = arg2;
       break;
     case 13:
-      if (data[0] >= 128) {
-        registers[data[1]] |= registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] |= dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] |= arg2;
       break;
     case 14:
-      if (data[0] >= 128) {
-        registers[data[1]] &= registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] &= dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] &= arg2;
       break;
     case 15:
-      if (data[0] >= 128) {
-        registers[data[1]] = ~registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] = ~dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] = ~arg2;
       break;
     case 16:
-      if (data[0] >= 128) {
-        registers[data[1]] ^= registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] ^= dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] ^= arg2;
       break;
     case 17:
-      if (data[0] >= 128) {
-        registers[data[1]] = -registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] = -dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] = -arg2;
       break;
     case 18:
-      if (data[0] >= 128) {
-        registers[data[1]] = (registers[data[1]] << (registers[data[2]] % 16)) + (registers[data[1]] >> (16 - registers[data[2]] % 16));
-        delta = 3;
-      } else {
-        registers[data[1]] = (registers[data[1]] << (dbytes(data[2], data[3]) % 16)) + (registers[data[1]] >> (16 - dbytes(data[2], data[3]) % 16));
-        delta = 4;
-      }
+      registers[data[1]] = (registers[data[1]] << (arg2 % 16)) | (registers[data[1]] >> (16 - arg2 % 16));
       break;
     case 19:
-      if (data[0] >= 128) {
-        registers[data[1]] = (registers[data[1]] >> (registers[data[2]] % 16)) + (registers[data[1]] << (16 - registers[data[2]] % 16));
-        delta = 3;
-      } else {
-        registers[data[1]] = (registers[data[1]] >> (dbytes(data[2], data[3]) % 16)) + (registers[data[1]] << (16 - dbytes(data[2], data[3]) % 16));
-        delta = 4;
-      }
+      registers[data[1]] = (registers[data[1]] >> (arg2 % 16)) | (registers[data[1]] << (16 - arg2 % 16));
       break;
     case 20:
-      if (data[0] >= 128) {
-        registers[data[1]] = registers[data[1]] << registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] = registers[data[1]] << dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] = registers[data[1]] << arg2;
       break;
     case 21:
-      if (data[0] >= 128) {
-        registers[data[1]] = registers[data[1]] >> registers[data[2]];
-        delta = 3;
-      } else {
-        registers[data[1]] = registers[data[1]] >> dbytes(data[2], data[3]);
-        delta = 4;
-      }
+      registers[data[1]] = registers[data[1]] >> arg2;
       break;
     case 22:
-      if (data[0] >= 128) {
-        registers[data[1]] = random(registers[data[2]]);
-        delta = 3;
-      } else {
-        registers[data[1]] = random(dbytes(data[2], data[3]));
-        delta = 4;
-      }
+      registers[data[1]] = rand() % arg2;
       break;
     case 23:
-      if (data[0] >= 128) {
-        for (int i = 0; i < registers[data[2]]; i++)
-          getc16(registers[data[1] + i]);
-        delta = 3;
-      } else {
-        for (int i = 0; i < dbytes(data[2], data[3]); i++)
-          getc16(registers[data[1] + i]);
-        delta = 4;
-      }
+      for (int i = 0; i < arg2; i++)
+        getc16(registers[data[1] + i]);
       break;
     case 24:
-      if (data[0] >= 128) {
-        for (int i = 0; i < registers[data[2]]; i++)
-          getc8(registers[data[1] + i]);
-        delta = 3;
-      } else {
-        for (int i = 0; i < dbytes(data[2], data[3]); i++)
-          getc8(registers[data[1] + i]);
-        delta = 4;
-      }
+      for (int i = 0; i < arg2; i++)
+        getc8(registers[data[1] + i]);
       break;
     case 25:
-      if (data[0] >= 128) {
-        for (int i = 0; i < registers[data[2]]; i++)
-          setc16(registers[data[1] + i]);
-        delta = 3;
-      } else {
-        for (int i = 0; i < dbytes(data[2], data[3]); i++)
-          setc16(registers[data[1] + i]);
-        delta = 4;
-      }
+      for (int i = 0; i < arg2; i++)
+        setc16(registers[data[1] + i]);
       break;
     case 26:
-      if (data[0] >= 128) {
-        for (int i = 0; i < registers[data[2]]; i++)
-          setc8(registers[data[1] + i]);
-        delta = 3;
-      } else {
-        for (int i = 0; i < dbytes(data[2], data[3]); i++)
-          setc8(registers[data[1] + i]);
-        delta = 4;
-      }
+      for (int i = 0; i < arg2; i++)
+        setc8(registers[data[1] + i]);
       break;
     case 27:
-      if (work_file.available()) {
-        if (data[0] >= 128) {
-          for (int i = 0; i < registers[data[2]]; i++)
+      if (work_file.available())
+          for (int i = 0; i < arg2; i++)
             getf16(registers[data[1] + i]);
-          delta = 3;
-        } else {
-          for (int i = 0; i < dbytes(data[2], data[3]); i++)
-            getf16(registers[data[1] + i]);
-          delta = 4;
-        }
-      } else
+      else
         return end_of_file;
       break;
     case 28:
-      if (work_file.available()) {
-        if (data[0] >= 128) {
-          for (int i = 0; i < registers[data[2]]; i++)
-            getf8(registers[data[1] + i]);
-          delta = 3;
-        } else {
-          for (int i = 0; i < dbytes(data[2], data[3]); i++)
-            getf8(registers[data[1] + i]);
-          delta = 4;
-        }
-      } else
+      if (work_file.available())
+        for (int i = 0; i < arg2; i++)
+          getf8(registers[data[1] + i]);
+      else
         return end_of_file;
       break;
     case 29:
-      if (data[0] >= 128) {
-        for (int i = 0; i < registers[data[2]]; i++)
-          setf16(registers[data[1] + i]);
-        delta = 3;
-      } else {
-        for (int i = 0; i < dbytes(data[2], data[3]); i++)
-          setf16(registers[data[1] + i]);
-        delta = 4;
-      }
+      for (int i = 0; i < arg2; i++)
+        setf16(registers[data[1] + i]);
       break;
     case 30:
-      if (data[0] >= 128) {
-        for (int i = 0; i < registers[data[2]]; i++)
-          setf8(registers[data[1] + i]);
-        delta = 3;
-      } else {
-        for (int i = 0; i < dbytes(data[2], data[3]); i++)
-          setf8(registers[data[1] + i]);
-        delta = 4;
-      }
+      for (int i = 0; i < arg2; i++)
+        setf8(registers[data[1] + i]);
       break;
     case 31:
-      if (data[0] >= 128) {
-        registers[data[1]] = digitalRead(registers[data[2]]);
-        delta = 3;
-      } else {
-        registers[data[1]] = digitalRead(dbytes(data[2], data[3]));
-        delta = 4;
-      }
+      registers[data[1]] = digitalRead(arg2);
       break;
     case 32:
-      if (data[0] >= 128) {
-        registers[data[1]] = analogRead(registers[data[2]]);
-        delta = 3;
-      } else {
-        registers[data[1]] = analogRead(dbytes(data[2], data[3]));
-        delta = 4;
-      }
+      registers[data[1]] = analogRead(arg2);
       break;
     case 33:
-      if (data[0] >= 128) {
-        digitalWrite(registers[data[1]], registers[data[2]]);
-        delta = 3;
-      } else {
-        digitalWrite(registers[data[1]], dbytes(data[2], data[3]));
-        delta = 4;
-      }
+      digitalWrite(registers[data[1]], arg2);
       break;
     case 34:
-      if (data[0] >= 128) {
-        analogWrite(registers[data[1]], registers[data[2]]);
-        delta = 3;
-      } else {
-        analogWrite(registers[data[1]], dbytes(data[2], data[3]));
-        delta = 4;
-      }
+      analogWrite(registers[data[1]], arg2);
       break;
     case 35:
-      if (data[0] >= 128) {
-        digitalWrite(registers[data[2]], registers[data[1]]);
-        delta = 3;
-      } else {
-        digitalWrite(dbytes(data[2], data[3]), registers[data[1]]);
-        delta = 4;
-      }
+      digitalWrite(arg2, registers[data[1]]);
       break;
     case 36:
-      if (data[0] >= 128) {
-        analogWrite(registers[data[2]], registers[data[1]]);
-        delta = 3;
-      } else {
-        analogWrite(dbytes(data[2], data[3]), registers[data[1]]);
-        delta = 4;
-      }
+      analogWrite(arg2, registers[data[1]]);
       break;
     case 37:
-      if (data[0] >= 128) {
-        cursorX = registers[data[1]] * LCD.getFontXsize();
-        delta = 3;
-      } else {
-        cursorX = dbytes(data[1], data[2]) * LCD.getFontXsize();
-        delta = 4;
-      }
+      cursorX = arg2 * LCD.getFontXsize();
       break;
     case 38:
-      if (data[0] >= 128) {
-        cursorY = registers[data[1]] * LCD.getFontYsize();
-        delta = 3;
-      } else {
-        cursorY = dbytes(data[1], data[2]) * LCD.getFontYsize();
-        delta = 4;
-      }
+      cursorY = arg2 * LCD.getFontYsize();
       break;
     case 39:
-      if (data[0] >= 128) {
-        LCD.setBackColor(VGA_COLORS[(registers[data[1]] >> 8) % 16]);
-        LCD.setColor(VGA_COLORS[((registers[data[1]] << 8) >> 8) % 16]);
-        delta = 3;
-      } else {
-        LCD.setBackColor(VGA_COLORS[(dbytes(data[1], data[2]) >> 8) % 16]);
-        LCD.setColor(VGA_COLORS[((dbytes(data[1], data[2]) << 8) >> 8) % 16]);
-        delta = 4;
-      }
+      LCD.setBackColor(VGA_COLORS[(arg2 >> 8) % 16]);
+      LCD.setColor(VGA_COLORS[((arg2 << 8) >> 8) % 16]);
       break;
     case 40:
-      if (data[0] >= 128) {
-        pinMode(registers[data[1]], OUTPUT);
-        delta = 3;
-      } else {
-        pinMode(dbytes(data[1], data[2]), OUTPUT);
-        delta = 4;
-      }
+      pinMode(arg2, OUTPUT);
       break;
     case 41:
-      if (data[0] >= 128) {
-        pinMode(registers[data[1]], INPUT);
-        delta = 3;
-      } else {
-        pinMode(dbytes(data[1], data[2]), INPUT);
-        delta = 4;
-      }
+      pinMode(arg2, INPUT);
       break;
     case 42:
-      if (data[0] >= 128) {
-        Serial.write(registers[data[1]]);
-        delta = 3;
-      } else {
-        Serial.write(dbytes(data[1], data[2]));
-        delta = 4;
-      }
+      Serial.write(arg2);//not tested
       break;
     case 43:
+      delay(arg2);
+      break;
+    case 44:
       registers[data[1]] = Serial.read();
       delta = 2;
       break;
-    case 44:
+    case 45:
       registers[data[1]] = registers[data[1]] + 1;
       delta = 2;
       break;
-    case 45:
+    case 46:
       registers[data[1]] = registers[data[1]] - 1;
       delta = 2;
       break;
-    case 46:
-      for (int8_t i = 0; i < 256; i++) {
+    case 47:
+      for (uint8_t i = 0; i < 255; i++) {
         work_file_name[i] = registers[data[1] + i];
         if (registers[data[1] + i] == 0)
           break;
@@ -569,8 +343,8 @@ uint8_t exe() {
         return opening_error;
       delta = 2;
       break;
-    case 47:
-      for (int8_t i = 0; i < 256; i++) {
+    case 48:
+      for (uint8_t i = 0; i < 255; i++) {
         work_file_name[i] = registers[data[1] + i];
         if (registers[data[1] + i] == 0)
           break;
@@ -582,8 +356,8 @@ uint8_t exe() {
         return opening_error;
       delta = 2;
       break;
-    case 48:
-      for (int8_t i = 0; i < 256; i++) {
+    case 49:
+      for (uint8_t i = 0; i < 255; i++) {
         work_file_name[i] = registers[data[1] + i];
         if (registers[data[1] + i] == 0)
           break;
@@ -593,58 +367,53 @@ uint8_t exe() {
         return opening_error;
       delta = 2;
       break;
-    case 49:
-      for (int8_t i = 0; i < 256; i++) {
+    case 50:
+      for (uint8_t i = 0; i < 255; i++) {
         work_file_name[i] = registers[data[1] + i];
         if (registers[data[1] + i] == 0)
           break;
       }
       SD.mkdir(work_file_name);
+      delta = 2;
       break;
-    case 50:
-      for (int8_t i = 0; i < 256; i++) {
+    case 51:
+      for (uint8_t i = 0; i < 255; i++) {
         work_file_name[i] = registers[data[1] + i];
         if (registers[data[1] + i] == 0)
           break;
       }
       SD.rmdir(work_file_name);
+      delta = 2;
       break;
-    case 51:
-      for (int8_t i = 0; i < 256; i++) {
+    case 52:
+      for (uint8_t i = 0; i < 255; i++) {
         work_file_name[i] = registers[data[1] + i];
         if (registers[data[1] + i] == 0)
           break;
       }
       SD.remove(work_file_name);
-      break;
-    case 52:
-      if (registers[data[1]] == 0)
-        exe_file.seek(dbytes(data[2], data[3]));
-      else
-        delta = 4;
+      delta = 2;
       break;
     case 53:
-      if (registers[data[1]] != 0)
+      if (registers[data[1]] == 0)
         exe_file.seek(dbytes(data[2], data[3]));
-      else
-        delta = 4;
       break;
     case 54:
-      if (registers[data[1]] > 0)
+      if (registers[data[1]] != 0)
         exe_file.seek(dbytes(data[2], data[3]));
-      else
-        delta = 4;
       break;
     case 55:
-      if (registers[data[1]] < 0)
+      if (registers[data[1]] > 0)
         exe_file.seek(dbytes(data[2], data[3]));
-      else
-        delta = 4;
       break;
     case 56:
-      exe_file.seek(dbytes(data[1], data[2]));
+      if (registers[data[1]] < 0)
+        exe_file.seek(dbytes(data[2], data[3]));
       break;
     case 57:
+      exe_file.seek(dbytes(data[1], data[2]));
+      break;
+    case 58:
       if (call == 255)
         return stack_overflow;
       call_stack[call] = exe_file.position();
@@ -660,14 +429,13 @@ uint8_t exe() {
 void printDirectory(File dir, int numTabs) {
   while (true) {
     File entry =  dir.openNextFile();
-    if (! entry)
+    if (!entry)
       break;
     for (int8_t i = 0; i < numTabs; i++)
       setc8('-');
     echo(entry.name(), strlen(entry.name()));
     if (entry.isDirectory()) {
-      setc8('/');
-      setc8('\n');
+      echoln("/", 1);
       printDirectory(entry, numTabs + 1);
     } else {
       echo("    ", 4);
@@ -679,14 +447,14 @@ void printDirectory(File dir, int numTabs) {
 }
 void nano() {
   File edit;
-  char text_buf[128][16], t;
+  char text_buf[128][16], t = 0;
   for (uint8_t ti = 0; ti <= 127; ti++)
     for (uint8_t tk = 0; tk <= 15; tk++)
       text_buf[ti][tk] = 0;
   int8_t i = 0, k = 0, page = 0;//i-th string, k-th character
   if (SD.exists(exe_file_name)) {
     edit = SD.open(exe_file_name, FILE_READ);
-    while (edit.available() && i <= 127) {
+    while (edit.available() && i < 127) {
       text_buf[i][k] = edit.read();
       if (text_buf[i][k] == '\n' || text_buf[i][k] == 0) {
         text_buf[i][k] = 0;
@@ -862,7 +630,7 @@ void setup() {
 void loop() {
   echo("/", 1);
   getstr(exe_file_name);
-  if (strlen(exe_file_name) > 0)
+  if (strlen(exe_file_name) > 0) {
     if (!strcmp(exe_file_name, "ls")) {
       File root = SD.open("/");
       printDirectory(root, 0);
@@ -907,7 +675,7 @@ void loop() {
       LCD.setBackColor(VGA_COLORS[atoi(exe_file_name)]);
     } else if (!SD.exists(exe_file_name))
       echoln("File not exist or bad command", 29);
-    else {
+  } else {
       exe_file = SD.open(exe_file_name, FILE_READ);
       if (exe_file) {
         while (exe_file.available()) {

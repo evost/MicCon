@@ -43,22 +43,23 @@
 | 40 | pni     | var1/int   | -          | pinMode(var1, INPUT)                     |
 | 41 | pno     | var1/int   | -          | pinMode(var1, OUTPUT)                    |
 | 42 | wsr     | var1/int   | -          | Serial.Write(var1)                       |
-| 43 | rsr     | var1       | -          | var1 = Serial.Read()                     |
-| 44 | inc     | var1       | -          | var1++                                   |
-| 45 | dec     | var1       | -          | var1--                                   |
-| 46 | ofr     | var1       | -          | open file to read                        |
-| 47 | ofw     | var1       | -          | open file to rewrite                     |
-| 48 | ofa     | var1       | -          | open file to addition                    |
-| 49 | mkd     | var1       | -          | make directory                           |
-| 50 | rmd     | var1       | -          | remove directory                         |
-| 51 | rmf     | var1       | -          | remove file                              |
-| 52 | ife     | var1       | label      | if var1==0 go to label                   |
-| 53 | ifn     | var1       | label      | if var1!=0 go to label                   |
-| 54 | ifb     | var1       | label      | if var1>0 go to label                    |
-| 55 | ifs     | var1       | label      | if var1<0 go to label                    |
-| 56 | jmp     | label      | -          | go to label                              |
-| 57 | cal     | label      | -          | call subroutine label                    |
+| 43 | dly     | var1/int   | -          | delay(var1)                              |
+| 44 | rsr     | var1       | -          | var1 = Serial.Read()                     |
+| 45 | inc     | var1       | -          | var1++                                   |
+| 46 | dec     | var1       | -          | var1--                                   |
+| 47 | ofr     | var1       | -          | open file to read                        |
+| 48 | ofw     | var1       | -          | open file to rewrite                     |
+| 49 | ofa     | var1       | -          | open file to addition                    |
+| 50 | mkd     | var1       | -          | make directory                           |
+| 51 | rmd     | var1       | -          | remove directory                         |
+| 52 | rmf     | var1       | -          | remove file                              |
+| 53 | ife     | var1       | label      | if var1==0 go to label                   |
+| 54 | ifn     | var1       | label      | if var1!=0 go to label                   |
+| 55 | ifb     | var1       | label      | if var1>0 go to label                    |
+| 56 | ifs     | var1       | label      | if var1<0 go to label                    |
+| 57 | jmp     | label      | -          | go to label                              |
+| 58 | cal     | label      | -          | call subroutine label                    |
 | -- | ------- | ---------- | ---------- | ---------------------------------------- |
-| 58 | lab     | new_label  | -          | declaration of label "new_label"         |
-| 59 | prс     | new_label  | -          | declaration of subroutine "new_label"    |
-| 60 | dat     | new_var    | uint       | declaration of array[uint]               |
+| 59 | lab     | new_label  | -          | declaration of label "new_label"         |
+| 60 | prс     | new_label  | -          | declaration of subroutine "new_label"    |
+| 61 | dat     | new_var    | uint       | declaration of array[uint]               |

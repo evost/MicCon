@@ -71,24 +71,25 @@ map <string, uint8_t> coms = {
 { "pni", 40 },
 { "pno", 41 },
 { "wsr", 42 },
-{ "rsr", 43 },
-{ "inc", 44 },
-{ "dec", 45 },
-{ "ofr", 46 },
-{ "ofw", 47 },
-{ "ofa", 48 },
-{ "mkd", 49 },
-{ "rmd", 50 },
-{ "rmf", 51 },
-{ "ife", 52 },
-{ "ifn", 53 },
-{ "ifb", 54 },
-{ "ifs", 55 },
-{ "jmp", 56 },
-{ "cal", 57 },
-{ "lab", 58 },
-{ "prc", 59 },
-{ "dat", 60 }
+{ "dly", 43 },
+{ "rsr", 44 },
+{ "inc", 45 },
+{ "dec", 46 },
+{ "ofr", 47 },
+{ "ofw", 48 },
+{ "ofa", 49 },
+{ "mkd", 50 },
+{ "rmd", 51 },
+{ "rmf", 52 },
+{ "ife", 53 },
+{ "ifn", 54 },
+{ "ifb", 55 },
+{ "ifs", 56 },
+{ "jmp", 57 },
+{ "cal", 58 },
+{ "lab", 59 },
+{ "prc", 60 },
+{ "dat", 61 }
 };
 map <uint8_t, string> errors = {
 {0, "UNKNOWN COMMAND"},
@@ -199,7 +200,7 @@ void parse(string s) {
 						push_data(get_var_num(arg2));
 					}
 				}
-				else if (coms[op] <= coms["wsr"]) {
+				else if (coms[op] <= coms["dly"]) {
 					if (arg2 != "")
 						throw 4;
 					if (is_number(arg1)) {
