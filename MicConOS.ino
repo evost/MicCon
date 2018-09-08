@@ -70,10 +70,10 @@ void setc8(const char &k) {
 }
 inline void echo(const char* s, const uint8_t len) {
   for (uint8_t i = 0; i < len; i++)
-  if (s[i] == 0)
-    break;
-  else
-    setc8(s[i]);
+    if (s[i] == 0)
+      break;
+    else
+      setc8(s[i]);
 }
 inline void echoln(const char* s, const uint8_t len) {
   echo(s, len);
@@ -122,20 +122,20 @@ void getstr(char* str, const uint8_t &len = 255) { //len - length of the string 
   while (keyboard.available())
     keyboard.read();
 }
-inline void getc16(int16_t u) {
+inline void getc16(int16_t &u) {
   char s[6];
   getstr(s, 5);
   u = (int16_t)atoi(s);
 }
-inline void getc8(int16_t u) {
+inline void getc8(int16_t &u) {
   char s[2];
   getstr(s, 1);
   u = s[0];
 }
-inline void getf8(int16_t u) {
+inline void getf8(int16_t &u) {
   u = work_file.available() ? work_file.read() : 0;
 }
-inline void getf16(int16_t u) {//if there is one byte left in the file, it will be returned as the big one (xxxxxxxx00000000)!
+inline void getf16(int16_t &u) {//if there is one byte left in the file, it will be returned as the big one (xxxxxxxx00000000)!
   int16_t a, b;
   getf8(a);
   getf8(b);
@@ -147,15 +147,15 @@ uint8_t exe() {
   int16_t arg2 = 0;
   if (data[0] >> 7) {
     if (opcode >= 37 && opcode <= 43)
-      arg2 = dbytes(data[1], data[2]);
-    else
-      arg2 = dbytes(data[2], data[3]);
-    delta = 3;
-  } else {
-    if (opcode >= 37 && opcode <= 43)
       arg2 = registers[data[1]];
     else
       arg2 = registers[data[2]];
+    delta = 3;
+  } else {
+    if (opcode >= 37 && opcode <= 43)
+      arg2 = dbytes(data[1], data[2]);
+    else
+      arg2 = dbytes(data[2], data[3]);
     delta = 4;
   }
   switch (opcode) {
@@ -192,6 +192,7 @@ uint8_t exe() {
       break;
     case 7:
       registers[data[1]] -= arg2;
+      break;
     case 8:
       registers[data[1]] *= arg2;
       break;
@@ -200,8 +201,7 @@ uint8_t exe() {
       registers[data[1]] /= arg2;
       break;
     case 10:
-      if (arg2 == 0)
-        return division_by_zero;
+      if (arg2 == 0) return division_by_zero;
       registers[data[1]] %= arg2;
       break;
     case 11:
@@ -258,8 +258,8 @@ uint8_t exe() {
       break;
     case 27:
       if (work_file.available())
-          for (int i = 0; i < arg2; i++)
-            getf16(registers[data[1] + i]);
+        for (int i = 0; i < arg2; i++)
+          getf16(registers[data[1] + i]);
       else
         return end_of_file;
       break;
@@ -493,8 +493,8 @@ void nano() {
       else if (i > 15)
         page++;
       if (!refresh) {
-          k = 0;
-          i = 0;
+        k = 0;
+        i = 0;
       }
       refresh = false;
       if (page > 15)
@@ -552,7 +552,7 @@ void nano() {
         refresh = true;
       }
       k = 0;
-    } else if (t == PS2_DELETE){
+    } else if (t == PS2_DELETE) {
       if (text_buf[page * 16 + i][0] == 0) {
         for (int8_t ti = i; ti <= 126; ti++)
           for (int8_t tk = 0; tk <= 15; tk++)
@@ -568,7 +568,7 @@ void nano() {
         }
         k--;
       }
-    } else if (t == PS2_RIGHTARROW){
+    } else if (t == PS2_RIGHTARROW) {
       setc8(text_buf[page * 16 + i][k]);
       if (text_buf[page * 16 + i][k] != 0) {
         k++;
@@ -576,21 +576,21 @@ void nano() {
         k = 0;
         i++;
       }
-    } else if (t == PS2_LEFTARROW){
+    } else if (t == PS2_LEFTARROW) {
       setc8(text_buf[page * 16 + i][k]);
       k--;
-    } else if (t == PS2_DOWNARROW){
+    } else if (t == PS2_DOWNARROW) {
       setc8(text_buf[page * 16 + i][k]);
       i++;
       k = 0;
-    } else if (t == PS2_UPARROW){
+    } else if (t == PS2_UPARROW) {
       setc8(text_buf[page * 16 + i][k]);
       i--;
       k = 0;
-    } else if (t == PS2_PAGEDOWN){
+    } else if (t == PS2_PAGEDOWN) {
       i = 16;
       k = 0;
-    } else if (t == PS2_PAGEUP){
+    } else if (t == PS2_PAGEUP) {
       i = -1;
       k = 0;
     } else if (text_buf[i][14] == 0) {
@@ -622,15 +622,15 @@ void setup() {
   keyboard.begin(ps2key_data_pin, ps2key_int_pin);
   if (!SD.begin(pin_SD))
     echoln("SD fail", 7);
-  #if (__AVR__)//freeMemory() does not work without these two lines on AVR-boards
+#if (__AVR__)//freeMemory() does not work without these two lines on AVR-boards
   File root = SD.open("/");
   root.close();
-  #endif
+#endif
 }
 void loop() {
   echo("/", 1);
   getstr(exe_file_name);
-  if (strlen(exe_file_name) > 0) {
+  if (strlen(exe_file_name) > 0)
     if (!strcmp(exe_file_name, "ls")) {
       File root = SD.open("/");
       printDirectory(root, 0);
@@ -673,17 +673,14 @@ void loop() {
       LCD.setColor(VGA_COLORS[atoi(exe_file_name)]);
       getstr(exe_file_name);
       LCD.setBackColor(VGA_COLORS[atoi(exe_file_name)]);
-    } else if (!SD.exists(exe_file_name))
+    } else if (!SD.exists(exe_file_name)) {
       echoln("File not exist or bad command", 29);
-  } else {
+    } else {
       exe_file = SD.open(exe_file_name, FILE_READ);
       if (exe_file) {
         while (exe_file.available()) {
           for (int8_t i = 0; i < 4; i++)
-            if (exe_file.available())
-              data[i] = exe_file.read();
-            else
-              data[i] = 0;
+            data[i] = exe_file.available() ? exe_file.read() : 0;
           exe_code = exe();
           if (exe_code == exe_end)
             break;
