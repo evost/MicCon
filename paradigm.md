@@ -44,9 +44,7 @@
 #### COMMANDS
 
 - ls - file listing
-- ram - display free RAM
 - uptime - display uptime in seconds
-- time - display system time
 - mkdir - make directory
 - rmdir - remove directory
 - mk - make file
@@ -54,8 +52,10 @@
 - nano - text editor 
 - b+ - increase backlight
 - b- - decrease backlight
-- file - execution of "/file"
-
-#### TODO
-
-- asm - assembler
+- asm - translate file into bytecode (first character of new file will be "_")
+- cat - show file into decimal mode
+- cd - change working directory
+- clear - clear the display
+- date - set date and time
+- color - set font and background colors
+- run - execution file with bytecode

@@ -7,10 +7,10 @@ MicConAsm is a translator for MicConOS.
 ## Requirements
 MicConOS requires the following libraries
 - [UTFT](http://rinkydinkelectronics.com/library.php?id=51)
-- [MemoryFree](https://github.com/mpflaga/Arduino-MemoryFree)
 - [PS2Keyboard](https://github.com/PaulStoffregen/PS2Keyboard)
-- [RTCLib](https://github.com/adafruit/RTClib)
-- Standart libraries from Arduino IDE, such as SD, Wire, etc. 
+- [DS3231](https://github.com/NorthernWidget/DS3231)
+- [timer-api](https://github.com/sadr0b0t/arduino-timer-api)
+- Standart libraries Arduino.h, SD.h, Wire.h, etc. 
 
 ## Examples
 You can compile examples from `/prog` with MicConAsm, copy `*.bin` files into SD and execute it with `io.bin` or `50.bin`

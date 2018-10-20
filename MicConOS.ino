@@ -1,6 +1,6 @@
 ﻿/*
  * MicConOS - virtual machine for Arduino Due and Mega
- * Copyright © 2018 Konstantin Kraynov 
+ * Copyright © 2018 Konstantin Kraynov
  * konstantin.kraynov@yandex.ru
  * License: GNU General Public License v3
  * This program is free software: you can redistribute it and/or modify
@@ -27,55 +27,101 @@
 #define opening_error 6
 #define rewrite_error 7
 #define off_by_one 8
+#include <Arduino.h>
+#include <timer-api.h>
 #include <SD.h>
 #include <UTFT.h>
 #include <PS2Keyboard.h>
-#include <RTClib.h>
-#include <MemoryFree.h>
+#include <DS3231.h>
+#ifdef __arm__
+extern "C" char* sbrk(int incr);
+#else  //!__arm__
+extern char *__brkval;
+#endif
 char exe_file_name[256];//current executable, 255 for name and path, and 1 for null terminator
+char directory[256] = "/";//working directory
+char path_buf[256];
 char work_file_name[256];//file with which the program works
 int8_t exe_code;//code returned by exe()
 int8_t delta = 4;//length of command, 1..4
 int8_t data[4];//a place for pre-loading from a file operation code and the three following bytes
-uint8_t BL = 64;//brightness of the backlight
+uint8_t BL = 51;//brightness of the backlight
 int16_t registers[256];
-uint16_t call_stack[255];//because the "call" can not be more than 255
 uint8_t call = 0;//number of the next entry in the call stack
+uint16_t call_stack[255];//because the "call" can not be more than 255
 uint16_t cursorY = 0;
 uint16_t cursorX = 0;
-char sTime[3];
+uint16_t cursorYbar;
 File exe_file;
 File work_file;
 PS2Keyboard keyboard;
 UTFT LCD(ILI9486, 38, 39, 40, 41);
-RTC_DS3231 rtc;
+DS3231 Clock;
 extern uint8_t BigFont[];
 const unsigned int VGA_COLORS[16] = {VGA_BLACK, VGA_WHITE, VGA_RED, VGA_GREEN, VGA_BLUE, VGA_SILVER, VGA_GRAY, VGA_MAROON, VGA_YELLOW, VGA_OLIVE, VGA_LIME, VGA_AQUA, VGA_TEAL, VGA_NAVY, VGA_FUCHSIA, VGA_PURPLE};
 inline uint16_t dbytes(const int8_t a, const int8_t b) {
   return ((uint16_t)a << 8) | b;
 }
+int free_memory() {
+  char top;
+#ifdef __arm__
+  return &top - reinterpret_cast<char*>(sbrk(0));
+#else  //!__arm__
+  return __brkval ? &top - __brkval : &top - __malloc_heap_start;
+#endif
+}
+void status() {
+  char bar[32], me[7], sTime[3];
+  bar[0] = 0;
+  bool Century=false;
+  bool h12;
+  bool PM;
+  strcat(bar, itoa(Clock.getDate(), sTime, 10));
+  strcat(bar, ".");
+  strcat(bar, itoa(Clock.getMonth(Century), sTime, 10));
+  strcat(bar, ".");
+  strcat(bar, itoa(Clock.getYear(), sTime, 10));
+  strcat(bar, " ");
+  strcat(bar, itoa(Clock.getHour(h12, PM), sTime, 10));
+  strcat(bar, ":");
+  strcat(bar, itoa(Clock.getMinute(), sTime, 10));
+  strcat(bar, " T=");
+  strcat(bar, itoa(Clock.getTemperature(), sTime, 10));
+  strcat(bar, " RAM=");
+  strcat(bar, itoa(free_memory(), me, 10));
+  LCD.print(bar, 0, cursorYbar);
+}
+inline void ClrScr() {
+  LCD.fillScr(LCD.getBackColor());
+  status();
+  cursorX = 0;
+  cursorY = 0;
+}
 void setc8(const char &k) {
-  char c[2] = {k, 0};
+  char c[2] = {(k == 0 || k == 127) ? ' ' : k, 0};
   if ((cursorX > LCD.getDisplayXSize() - LCD.getFontXsize()) || k == '\n') {
     cursorX = 0;
     cursorY += LCD.getFontYsize();
-    if (cursorY > LCD.getDisplayYSize() -  LCD.getFontYsize()) {
-      LCD.clrScr();
-      cursorY = 0;
+    if (cursorY > LCD.getDisplayYSize() - 2 * LCD.getFontYsize()) {
+      while (keyboard.read() != PS2_ENTER) delay(16);
+      ClrScr();
     }
-  } else if (k >= 32 && k != 127) {
+  } else if (k == 127) {
+    cursorX -= LCD.getFontXsize();
+    LCD.print(c, cursorX, cursorY);
+  } else {
     LCD.print(c, cursorX, cursorY);
     cursorX += LCD.getFontXsize();
   }
 }
-inline void echo(const char* s, const uint8_t len) {
+void echo(const char* s, const uint8_t &len = 255) {
   for (uint8_t i = 0; i < len; i++)
     if (s[i] == 0)
       break;
     else
       setc8(s[i]);
 }
-inline void echoln(const char* s, const uint8_t len) {
+inline void echoln(const char* s, const uint8_t &len = 255) {
   echo(s, len);
   setc8('\n');
 }
@@ -91,36 +137,26 @@ inline void setf16(const int16_t u) {
   setf8(u >> 8);
   setf8((u << 8) >> 8);
 }
-void getstr(char* str, const uint8_t &len = 255) { //len - length of the string without the null terminator
-  echo("> ", 2);
-  uint8_t i = 0,  buf;
+uint8_t getstr(char* str, const uint8_t &len = 255) {
+  setc8('>');
+  uint8_t i = 0, buf;
   while (buf != PS2_ENTER) {
     while (!keyboard.available()) delay(16);
     buf = keyboard.read();
-    if (buf >= 32 && buf != PS2_DELETE && i < len) {
+    if (buf == PS2_DELETE && i > 0) {
+      str[--i] = 0;
+      setc8(buf);
+    } else if (buf == PS2_ENTER) {
+      str[i] = 0;
+      setc8('\n');
+    } else if (buf >= 32 && i < len) {
       str[i++] = buf;
       setc8(buf);
-    } else if (buf == PS2_DELETE) {
-      if (i > 0) {
-        str[i] = ' ';
-        i--;
-        cursorX -= LCD.getFontXsize();
-        setc8(' ');
-        cursorX -= LCD.getFontXsize();
-      }
-    } else {
-      str[i] = 0;
-      cursorY += LCD.getFontYsize();
-      cursorX = 0;
-      if (cursorY > LCD.getDisplayYSize() -  LCD.getFontYsize()) {
-        LCD.clrScr();
-        cursorY = 0;
-      }
-      break;
     }
   }
   while (keyboard.available())
     keyboard.read();
+  return i;
 }
 inline void getc16(int16_t &u) {
   char s[6];
@@ -176,9 +212,7 @@ uint8_t exe() {
       return exe_end;
       break;
     case 4:
-      LCD.clrScr();
-      cursorX = 0;
-      cursorY = 0;
+      ClrScr();
       delta = 1;
       break;
     case 5:
@@ -435,10 +469,10 @@ void printDirectory(File dir, int numTabs) {
       setc8('-');
     echo(entry.name(), strlen(entry.name()));
     if (entry.isDirectory()) {
-      echoln("/", 1);
+      echoln("/");
       printDirectory(entry, numTabs + 1);
     } else {
-      echo("    ", 4);
+      echo("    ");
       setc16(entry.size());
       setc8('\n');
     }
@@ -447,76 +481,69 @@ void printDirectory(File dir, int numTabs) {
 }
 void nano() {
   File edit;
-  char text_buf[128][16], t = 0;
-  for (uint8_t ti = 0; ti <= 127; ti++)
-    for (uint8_t tk = 0; tk <= 15; tk++)
-      text_buf[ti][tk] = 0;
+  char text_buf[128][16], t;
   int8_t i = 0, k = 0, page = 0;//i-th string, k-th character
   if (SD.exists(exe_file_name)) {
     edit = SD.open(exe_file_name, FILE_READ);
-    while (edit.available() && i < 127) {
-      text_buf[i][k] = edit.read();
-      if (text_buf[i][k] == '\n' || text_buf[i][k] == 0) {
-        text_buf[i][k] = 0;
-        k = 0;
-        i++;
-      } else if (text_buf[i][k] == '\r')
-        text_buf[i][k] = 0;
-      else
-        k++;
-      if (k == 15) {
-        text_buf[i][k] = 0;
-        k = 0;
-        i++;
-      }
+    for (uint8_t ti = 0; ti <= 127; ti++) {
+      t = 1;
+      for (uint8_t tk = 0; tk <= 15; tk++)
+        if (edit.available() && t != 0) {
+          t = edit.read();
+          if (t < 32 || t == 127 || tk == 15) {
+            t = 0;
+            while (edit.peek() < 32 && edit.available())
+              edit.read();
+          }
+          text_buf[ti][tk] = t;
+        } else
+          text_buf[ti][tk] = 0;
     }
     edit.close();
-  }
-  cursorX = 0;
-  cursorY = LCD.getFontYsize();
+  } else
+    for (uint8_t ti = 0; ti <= 127; ti++)
+      for (uint8_t tk = 0; tk <= 15; tk++)
+        text_buf[ti][tk] = 0;
   i = 0;
   k = 0;
   bool refresh = true;
   while (t != PS2_ESC) {
-    if (k >= 15) {
+    if (k > 15) {
       text_buf[page * 16 + i][15] = 0;
       k = 0;
-      i++;
-    }
-    if (k < 0) {
-      k = 0;
-      i--;
+      ++i;
+    } else if (k < 0) {
+      if (i > 0) {
+        --i;
+        for (k = 0; k < 15 && text_buf[page * 16 + i][k] != 0; k++);
+      } else
+        k = 0;
     }
     if (i > 15 || i < 0 || refresh) {
-      if (i < 0)
-        page--;
-      else if (i > 15)
-        page++;
-      if (!refresh) {
-        k = 0;
-        i = 0;
-      }
       refresh = false;
-      if (page > 15)
-        page = 15;
-      if (page < 0)
-        page = 0;
-      LCD.clrScr();
-      cursorX = 0;
-      cursorY = 0;
-      echo("ESC-exit TAB-save PAGE=", 23);
+      if (i < 0) {
+        i = 0;
+        if (page > 0) --page;
+      }
+      else if (i > 15) {
+        i = 15;
+        if (page < 7) ++page;
+      }
+      ClrScr();
+      echo("ESC-exit TAB-save PAGE=");
       setc16(page);
       setc8('\n');
       setc8('\n');
-      for (uint8_t x = 0; x <= 15; x++)
-        for (uint8_t y = 0; y <= 15; y++)
-          if (text_buf[page * 16 + x][y] == 0) {
+      for (uint8_t ti = 0; ti <= 15; ti++)
+        for (uint8_t tk = 0; tk <= 15; tk++)
+          if (text_buf[page * 16 + ti][tk] == 0) {
             setc8('\n');
-            y = 16;
-          }
-          else
-            setc8(text_buf[page * 16 + x][y]);
+            break;
+          } else
+            setc8(text_buf[page * 16 + ti][tk]);
     }
+    if (text_buf[page * 16 + i][k] == 0)
+      for (; k > 0 && text_buf[page * 16 + i][k - 1] == 0; k--);
     cursorX = k * LCD.getFontXsize();
     cursorY = (i + 2) * LCD.getFontYsize();
     setc8('_');
@@ -544,17 +571,19 @@ void nano() {
           for (int8_t tk = 15; tk >= 0; tk--)
             text_buf[ti][tk] = text_buf[ti - 1][tk];
         for (int8_t tk = 0; tk < 15 - k; tk++) {
-          text_buf[i][tk] = text_buf[i - 1][k + tk + 1];
-          text_buf[i - 1][k + tk + 1] = 0;
+          text_buf[page * 16 + i][tk] = text_buf[page * 16 + i - 1][k + tk + 1];
+          text_buf[page * 16 + i - 1][k + tk + 1] = 0;
         }
         for (int8_t tk = 15 - k; tk <= 15; tk++)
-          text_buf[i][tk] = 0;
+          text_buf[page * 16 + i][tk] = 0;
         refresh = true;
       }
       k = 0;
     } else if (t == PS2_DELETE) {
+      setc8(text_buf[page * 16 + i][k]);
+      cursorX -= LCD.getFontXsize();
       if (text_buf[page * 16 + i][0] == 0) {
-        for (int8_t ti = i; ti <= 126; ti++)
+        for (int8_t ti = page * 16 + i; ti <= 126; ti++)
           for (int8_t tk = 0; tk <= 15; tk++)
             text_buf[ti][tk] = text_buf[ti + 1][tk];
         for (int8_t tk = 0; tk <= 15; tk++)
@@ -563,139 +592,451 @@ void nano() {
       } else if (k > 0) {
         cursorX -= LCD.getFontXsize();
         for (int8_t tk = k; tk <= 15; tk++) {
-          text_buf[i][tk - 1] = text_buf[i][tk];
-          setc8(text_buf[i][tk]);
+          text_buf[page * 16 + i][tk - 1] = text_buf[i][tk];
+          setc8(text_buf[page * 16 + i][tk]);
         }
-        k--;
       }
+      k--;
     } else if (t == PS2_RIGHTARROW) {
       setc8(text_buf[page * 16 + i][k]);
-      if (text_buf[page * 16 + i][k] != 0) {
-        k++;
-      } else {
+      if (text_buf[page * 16 + i][k] == 0) {
         k = 0;
         i++;
-      }
+      } else 
+        k++;
     } else if (t == PS2_LEFTARROW) {
       setc8(text_buf[page * 16 + i][k]);
       k--;
     } else if (t == PS2_DOWNARROW) {
       setc8(text_buf[page * 16 + i][k]);
       i++;
-      k = 0;
     } else if (t == PS2_UPARROW) {
       setc8(text_buf[page * 16 + i][k]);
       i--;
-      k = 0;
+    } else if (t == PS2_HOME) {
+      setc8(text_buf[page * 16 + i][k]);
+      i = 0;
+    } else if (t == PS2_END) {
+      setc8(text_buf[page * 16 + i][k]);
+      i = 15;
     } else if (t == PS2_PAGEDOWN) {
-      i = 16;
-      k = 0;
+      setc8(text_buf[page * 16 + i][k]);
+      if (page < 7) {
+        ++page;
+        refresh = true;
+      }
+      else
+        i = 15;
     } else if (t == PS2_PAGEUP) {
-      i = -1;
-      k = 0;
-    } else if (text_buf[i][14] == 0) {
+      setc8(text_buf[page * 16 + i][k]);
+      if (page > 0) {
+        --page;
+        refresh = true;
+      }
+      else
+        i = 0;
+    } else if (text_buf[page * 16 + i][14] == 0) {
       for (int8_t tk = 14; tk > k; tk--)
-        text_buf[i][tk] = text_buf[i][tk - 1];
+        text_buf[page * 16 + i][tk] = text_buf[page * 16 + i][tk - 1];
       text_buf[page * 16 + i][k] = t;
       for (int8_t tk = k; tk < 15; tk++)
         setc8(text_buf[page * 16 + i][tk]);
       k++;
     }
   }
-  LCD.clrScr();
-  cursorX = 0;
-  cursorY = 0;
+  ClrScr();
+}
+void asm_lite() {
+  File source, bin;
+  char op[4], arg1[7], arg2[7], t;
+  uint16_t labels[32], sz = 0;
+  uint8_t opcode,  i;
+  if (SD.exists(exe_file_name)) {
+    source = SD.open(exe_file_name, FILE_READ);
+    exe_file_name[0] = '_';
+    SD.remove(exe_file_name);
+    bin = SD.open(exe_file_name, FILE_WRITE);
+    while (source.available()) {
+      t = ' ';
+      i = 0;
+      while (isspace(t) && source.available())
+        t = source.read();
+      while (!isspace(t) && source.available()) {
+        op[i] = t;
+        t = source.read();
+        i++;
+      }
+      op[i] = 0;
+      while (isspace(t) && source.available() && t != '\n')
+        t = source.read();
+      i = 0;
+      while (!isspace(t) && source.available()) {
+        arg1[i] = t;
+        t = source.read();
+        i++;
+      }
+      arg1[i] = 0;
+      while (isspace(t) && source.available() && t != '\n')
+        t = source.read();
+      i = 0;
+      while (!isspace(t) && source.available()) {
+        arg2[i] = t;
+        t = source.read();
+        i++;
+      }
+      arg2[i] = 0;
+      if (strlen(op) == 3) {
+        if (!strcmp(op, "nop"))
+          opcode = 0;
+        else if (!strcmp(op, "ret"))
+          opcode = 1;
+        else if (!strcmp(op, "clf"))
+          opcode = 2;
+        else if (!strcmp(op, "end"))
+          opcode = 3;
+        else if (!strcmp(op, "clr"))
+          opcode = 4;
+        else if (!strcmp(op, "xch"))
+          opcode = 5;
+        else if (!strcmp(op, "add"))
+          opcode = 6;
+        else if (!strcmp(op, "sub"))
+          opcode = 7;
+        else if (!strcmp(op, "mul"))
+          opcode = 8;
+        else if (!strcmp(op, "div"))
+          opcode = 9;
+        else if (!strcmp(op, "mod"))
+          opcode = 10;
+        else if (!strcmp(op, "pow"))
+          opcode = 11;
+        else if (!strcmp(op, "mov"))
+          opcode = 12;
+        else if (!strcmp(op, "orl"))
+          opcode = 13;
+        else if (!strcmp(op, "and"))
+          opcode = 14;
+        else if (!strcmp(op, "not"))
+          opcode = 15;
+        else if (!strcmp(op, "xor"))
+          opcode = 16;
+        else if (!strcmp(op, "neg"))
+          opcode = 17;
+        else if (!strcmp(op, "rol"))
+          opcode = 18;
+        else if (!strcmp(op, "ror"))
+          opcode = 19;
+        else if (!strcmp(op, "shl"))
+          opcode = 20;
+        else if (!strcmp(op, "shr"))
+          opcode = 21;
+        else if (!strcmp(op, "rnd"))
+          opcode = 22;
+        else if (!strcmp(op, "rci"))
+          opcode = 23;
+        else if (!strcmp(op, "rcc"))
+          opcode = 24;
+        else if (!strcmp(op, "wci"))
+          opcode = 25;
+        else if (!strcmp(op, "wcc"))
+          opcode = 26;
+        else if (!strcmp(op, "rfi"))
+          opcode = 27;
+        else if (!strcmp(op, "rfc"))
+          opcode = 28;
+        else if (!strcmp(op, "wfi"))
+          opcode = 29;
+        else if (!strcmp(op, "wfc"))
+          opcode = 30;
+        else if (!strcmp(op, "rdd"))
+          opcode = 31;
+        else if (!strcmp(op, "rda"))
+          opcode = 32;
+        else if (!strcmp(op, "wfd"))
+          opcode = 33;
+        else if (!strcmp(op, "wfa"))
+          opcode = 34;
+        else if (!strcmp(op, "wsd"))
+          opcode = 35;
+        else if (!strcmp(op, "wsa"))
+          opcode = 36;
+        else if (!strcmp(op, "stx"))
+          opcode = 37;
+        else if (!strcmp(op, "sty"))
+          opcode = 38;
+        else if (!strcmp(op, "stc"))
+          opcode = 39;
+        else if (!strcmp(op, "pni"))
+          opcode = 40;
+        else if (!strcmp(op, "pno"))
+          opcode = 41;
+        else if (!strcmp(op, "wsr"))
+          opcode = 42;
+        else if (!strcmp(op, "dly"))
+          opcode = 43;
+        else if (!strcmp(op, "rsr"))
+          opcode = 44;
+        else if (!strcmp(op, "inc"))
+          opcode = 45;
+        else if (!strcmp(op, "dec"))
+          opcode = 46;
+        else if (!strcmp(op, "ofr"))
+          opcode = 47;
+        else if (!strcmp(op, "ofw"))
+          opcode = 48;
+        else if (!strcmp(op, "ofa"))
+          opcode = 49;
+        else if (!strcmp(op, "mkd"))
+          opcode = 50;
+        else if (!strcmp(op, "rmd"))
+          opcode = 51;
+        else if (!strcmp(op, "rmf"))
+          opcode = 52;
+        else if (!strcmp(op, "ife"))
+          opcode = 53;
+        else if (!strcmp(op, "ifn"))
+          opcode = 54;
+        else if (!strcmp(op, "ifb"))
+          opcode = 55;
+        else if (!strcmp(op, "ifs"))
+          opcode = 56;
+        else if (!strcmp(op, "jmp"))
+          opcode = 57;
+        else if (!strcmp(op, "cal"))
+          opcode = 58;
+        else if (!strcmp(op, "lab"))
+          opcode = 59;
+        else if (!strcmp(op, "prс"))
+          opcode = 60;
+        //else if (!strcmp(op, "dat"))
+        //  opcode = 61;
+        if (opcode <= 4) {
+          bin.write(opcode);
+          sz += 1;
+        } else if (opcode <= 5) {
+          bin.write(opcode);
+          for (uint8_t k = 0; k < 6; k++) {
+            arg1[k] = arg1[k + 1];
+            arg2[k] = arg2[k + 1];
+          }
+          bin.write(atoi(arg1));
+          bin.write(atoi(arg2));
+          sz += 3;
+        } else if (opcode <= 36) {
+          if (isdigit(arg2[0])) {
+            bin.write(opcode);
+            for (uint8_t k = 0; k < 6; k++)
+              arg1[k] = arg1[k + 1];
+            bin.write(atoi(arg1));
+            bin.write(atoi(arg2) >> 8);
+            bin.write((atoi(arg2) << 8) >> 8);
+            sz += 4;
+          } else {
+            bin.write(opcode + 128);
+            for (uint8_t k = 0; k < 6; ++k) {
+              arg1[k] = arg1[k + 1];
+              arg2[k] = arg2[k + 1];
+            }
+            bin.write(atoi(arg1));
+            bin.write(atoi(arg2));
+            sz += 3;
+          }
+        } else if (opcode <= 43) {
+          if (isdigit(arg1[0])) {
+            bin.write(opcode);
+            bin.write(atoi(arg1) >> 8);
+            bin.write((atoi(arg1) << 8) >> 8);
+            sz += 3;
+          } else {
+            bin.write(opcode + 128);
+            for (uint8_t k = 0; k < 6; k++)
+              arg1[k] = arg1[k + 1];
+            bin.write(atoi(arg1));
+            sz += 2;
+          }
+        } else if (opcode <= 52) {
+          bin.write(opcode);
+          for (uint8_t k = 0; k < 6; k++)
+            arg1[k] = arg1[k + 1];
+          bin.write(atoi(arg1));
+          sz += 2;
+        } else if (opcode <= 56) {
+          bin.write(opcode);
+          for (uint8_t k = 0; k < 6; k++) {
+            arg1[k] = arg1[k + 1];
+            arg2[k] = arg2[k + 1];
+          }
+          bin.write(atoi(arg1));
+          bin.write(labels[atoi(arg2)] >> 8);
+          bin.write((labels[atoi(arg2)] << 8) >> 8);
+          sz += 3;
+        } else if (opcode <= 58) {
+          bin.write(opcode);
+          for (uint8_t k = 0; k < 6; k++)
+            arg1[k] = arg1[k + 1];
+          bin.write(labels[atoi(arg1)] >> 8);
+          bin.write((labels[atoi(arg1)] << 8) >> 8);
+          sz += 2;
+        } else if (opcode <= 60) {
+          for (uint8_t k = 0; k < 6; k++)
+            arg1[k] = arg1[k + 1];
+          labels[atoi(arg1)] = sz;
+        }
+      }
+    }
+    source.close();
+    bin.close();
+  }
+}
+void cat() {
+  File bin;
+  uint8_t t;
+  if (SD.exists(exe_file_name)) {
+    bin = SD.open(exe_file_name, FILE_READ);
+    while (bin.available()) {
+        t = bin.read();
+        setc16(t);
+        setc8(' ');
+    }
+    bin.close();
+  }
+  setc8('\n');
+}
+bool get_file_name(const bool &m = false) {
+  getstr(exe_file_name);
+  if (exe_file_name[0] != '/') {
+    strcpy(path_buf, exe_file_name);
+    strcpy(exe_file_name, directory);
+    strcat(exe_file_name, path_buf);
+  }
+  if (SD.exists(exe_file_name) || !m)
+    return true;
+  else {
+    echoln("file not exist");
+    return false;
+  }
 }
 void setup() {
   pinMode(pin_SD, OUTPUT);
   pinMode(pin_BL, OUTPUT);
   LCD.InitLCD();
-  LCD.clrScr();
   LCD.setFont(BigFont);
-  LCD.setColor(VGA_COLORS[10]);
+  LCD.setColor(VGA_LIME);
   analogWrite(pin_BL, BL);
-  echoln("MicConOS 0.8b", 13);
-  if (!rtc.begin())
-    echoln("RTC fail", 8);
-  if (rtc.lostPower())
-    rtc.adjust(DateTime(__DATE__, __TIME__));
   keyboard.begin(ps2key_data_pin, ps2key_int_pin);
+  Wire.begin();
+  cursorYbar = LCD.getDisplayYSize() - LCD.getFontYsize();
+  uint8_t *c = (uint8_t*)malloc(1);
+  free(c);
+  ClrScr();
+  timer_init_ISR_1Hz(TIMER_DEFAULT);
+  echoln("MicConOS 0.9b");
   if (!SD.begin(pin_SD))
-    echoln("SD fail", 7);
-#if (__AVR__)//freeMemory() does not work without these two lines on AVR-boards
-  File root = SD.open("/");
-  root.close();
-#endif
+    echoln("SD fail");
 }
 void loop() {
-  echo("/", 1);
+  echo(directory);
   getstr(exe_file_name);
-  if (strlen(exe_file_name) > 0)
+  if (exe_file_name[0] != 0)
     if (!strcmp(exe_file_name, "ls")) {
-      File root = SD.open("/");
+      File root = SD.open(directory);
       printDirectory(root, 0);
       root.close();
     } else if (!strcmp(exe_file_name, "uptime")) {
       setc16(millis() / 1000);
-      echoln(" s", 2);
-    } else if (!strcmp(exe_file_name, "time")) {
-      itoa(rtc.now().hour(), sTime, 10);
-      echo(sTime, 2);
-      echo(":", 1);
-      itoa(rtc.now().minute(), sTime, 10);
-      echoln(sTime, 2);
-    } else if (!strcmp(exe_file_name, "ram")) {
-      setc16(freeMemory());
-      echoln(" bytes free RAM", 15);
+      echoln(" s");
     } else if (!strcmp(exe_file_name, "nano")) {
-      getstr(exe_file_name);
+      get_file_name();
       nano();
+    } else if (!strcmp(exe_file_name, "asm")) {
+      if (get_file_name(true))
+        asm_lite();
+    } else if (!strcmp(exe_file_name, "cat")) {
+      if (get_file_name(true))
+        cat();
     } else if (!strcmp(exe_file_name, "mkdir")) {
-      getstr(exe_file_name);
+      get_file_name();
       SD.mkdir(exe_file_name);
     } else if (!strcmp(exe_file_name, "rmdir")) {
-      getstr(exe_file_name);
+      get_file_name();
       SD.rmdir(exe_file_name);
     } else if (!strcmp(exe_file_name, "mk")) {
+      get_file_name();
       File temp = SD.open(exe_file_name, FILE_WRITE);
       temp.close();
     } else if (!strcmp(exe_file_name, "rm")) {
-      getstr(exe_file_name);
+      get_file_name();
       SD.remove(exe_file_name);
+    } else if (!strcmp(exe_file_name, "cd")) {
+      strcpy(path_buf, "");
+      getstr(exe_file_name);
+      if (strcmp(exe_file_name, "/")) {
+        strcat(exe_file_name, "/");
+        if (exe_file_name[0] != '/')
+          strcpy(path_buf, directory);
+        strcat(path_buf, exe_file_name);
+        if (SD.exists(path_buf)) {
+          File temp = SD.open(path_buf);
+          if (temp.isDirectory())
+            strcpy(directory, path_buf);
+          else
+            echoln("Isn't dir");
+          temp.close();
+        } else
+          echoln("Isn't exist");
+      } else
+        strcpy(directory, exe_file_name);
     } else if (!strcmp(exe_file_name, "b+")) {
-      BL += 16;
-      analogWrite(pin_BL, BL);
+      if (BL < 255) {
+        BL += 51;
+        analogWrite(pin_BL, BL);
+      }
     } else if (!strcmp(exe_file_name, "b-")) {
-      BL -= 16;
-      analogWrite(pin_BL, BL);
+      if (BL > 0) {
+        BL -= 51;
+        analogWrite(pin_BL, BL);
+      }
+    } else if (!strcmp(exe_file_name, "clear")) {
+      ClrScr();
+    } else if (!strcmp(exe_file_name, "date")) {
+      echoln("DDMMYYHHMM");
+      getstr(exe_file_name);
+      Clock.setDate((exe_file_name[0] -48) * 10 + exe_file_name[1] -48);
+      Clock.setMonth((exe_file_name[2] -48) * 10 + exe_file_name[3] -48);
+      Clock.setYear((exe_file_name[4] -48) * 10 + exe_file_name[5] -48);
+      Clock.setHour((exe_file_name[6] -48) * 10 + exe_file_name[7] -48);
+      Clock.setMinute((exe_file_name[8] -48) * 10 + exe_file_name[9] -48);
     } else if (!strcmp(exe_file_name, "color")) {
       getstr(exe_file_name);
       LCD.setColor(VGA_COLORS[atoi(exe_file_name)]);
       getstr(exe_file_name);
       LCD.setBackColor(VGA_COLORS[atoi(exe_file_name)]);
-    } else if (!SD.exists(exe_file_name)) {
-      echoln("File not exist or bad command", 29);
-    } else {
-      exe_file = SD.open(exe_file_name, FILE_READ);
-      if (exe_file) {
-        while (exe_file.available()) {
-          for (int8_t i = 0; i < 4; i++)
-            data[i] = exe_file.available() ? exe_file.read() : 0;
-          exe_code = exe();
-          if (exe_code == exe_end)
-            break;
-          else if (exe_code != exe_ok) {
-            setc16(exe_code);
-            echoln(" runtime error", 14);
-            break;
+    } else if (!strcmp(exe_file_name, "run")) {
+      if (get_file_name(true)) {
+        exe_file = SD.open(exe_file_name, FILE_READ);
+        if (exe_file) {
+          while (exe_file.available()) {
+            for (int8_t i = 0; i < 4; i++)
+              data[i] = exe_file.available() ? exe_file.read() : 0;
+            exe_code = exe();
+            if (exe_code == exe_end)
+              break;
+            else if (exe_code != exe_ok) {
+              setc16(exe_code);
+              echoln(" runtime error");
+              break;
+            }
+            if (delta != 0 && delta != 4)
+              exe_file.seek(exe_file.position() - (4 - delta));
           }
-          if (delta != 0 && delta != 4)
-            exe_file.seek(exe_file.position() - (4 - delta));
-        }
-        exe_file.close();
-      } else {
-        echo(exe_file_name, strlen(exe_file_name));
-        echoln(" error opening", 14);
+          exe_file.close();
+        } else
+          echoln("Opening error");
       }
-    }
+    } else
+      echoln("Bad command");
+}
+void timer_handle_interrupts(int timer) {
+  static int count = 0;
+  if (!(count++ % 4)) status();
 }
