@@ -1,6 +1,9 @@
-﻿### PARADIGM
+﻿# PARADIGM
 
-- source code of the program is written in assembly-like language and translated (by assembler, macro processor) into an object file containing interpreted bytecode
+- list of shell commands in the shell.md
+- shell can interpret scripts (see shell.md for details)
+- MocConOS can execute programs written and compiled for it
+- source code of the program is written in assembly-like language and translated (compiled by assembler, macro processor) into an object file containing interpreted bytecode
 - bytecode execution (interpretation) environment is a register-based virtual machine (similar to Java, Dalvik, .Net)
 - VM uses an array of variables (registers in their essence) and a call stack
 - call stack size is 254
@@ -40,22 +43,3 @@
 	- I2C: 20 21
 	- Other: 66 67 68 69
 	- Due only: 50 51 52
-
-#### COMMANDS
-
-- ls - file listing
-- uptime - display uptime in seconds
-- mkdir - make directory
-- rmdir - remove directory
-- mk - make file
-- rm - remove file
-- nano - text editor 
-- b+ - increase backlight
-- b- - decrease backlight
-- asm - translate file into bytecode (first character of new file will be "_")
-- cat - show file into decimal mode
-- cd - change working directory
-- clear - clear the display
-- date - set date and time
-- color - set font and background colors
-- run - execution file with bytecode

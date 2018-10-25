@@ -13,7 +13,7 @@
 | 10 | mod     | var1       | var2/int   | var1 %= var2                             |
 | 11 | pow     | var1       | var2/int   | var1 = var1 ^ var2                       |
 | 12 | mov     | var1       | var2/int   | var1 = var2                              |
-| 13 | orl     | var1       | var2/int   | var1 |= var2                             |
+| 13 | orl     | var1       | var2/int   | var1 \|= var2                            |
 | 14 | and     | var1       | var2/int   | var1 &= var2                             |
 | 15 | not     | var1       | var2/int   | var1 ~= var2                             |
 | 16 | xor     | var1       | var2/int   | var1 ^= var2                             |

@@ -2,15 +2,14 @@
 
 MicConOS is a virtual machine for Arduino Due and Mega, that can execute files compiled for it and work with hardware, such as SD, TFT, PS/2 keyboard, RTC.
 
-MicConAsm is a translator for MicConOS.
+MicConAsm is a translator (compiler) for MicConOS.
 
 ## Requirements
 MicConOS requires the following libraries
 - [UTFT](http://rinkydinkelectronics.com/library.php?id=51)
 - [PS2Keyboard](https://github.com/PaulStoffregen/PS2Keyboard)
-- [DS3231](https://github.com/NorthernWidget/DS3231)
 - [timer-api](https://github.com/sadr0b0t/arduino-timer-api)
-- Standart libraries Arduino.h, SD.h, Wire.h, etc. 
+- Standart libraries Arduino.h, SD.h, Wire.h, SPI.h
 
 ## Examples
 You can compile examples from `/prog` with MicConAsm, copy `*.bin` files into SD and execute it with `io.bin` or `50.bin`
