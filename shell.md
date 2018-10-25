@@ -17,13 +17,13 @@
 - ls D				- *file listing*
 - mk F				- *make file*
 - mkdir D			- *make directory*
-- nano F			- *text editor*
 - pwd				- *print current directory*
 - rm F				- *remove file*
 - rmdir D			- *remove directory*
 - run F			- *execution of file with bytecode*
 - sh F				- *start script*
 - uptime			- *display uptime in seconds*
+- vi F				- *text editor*
 - ' stuff			- *remark/comment*
 
 ## Expressions, Math
