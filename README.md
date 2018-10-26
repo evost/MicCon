@@ -9,7 +9,16 @@ MicConOS requires the following libraries
 - [UTFT](http://rinkydinkelectronics.com/library.php?id=51)
 - [PS2Keyboard](https://github.com/PaulStoffregen/PS2Keyboard)
 - [timer-api](https://github.com/sadr0b0t/arduino-timer-api)
-- Standart libraries Arduino.h, SD.h, Wire.h, SPI.h
+- [SD](https://github.com/arduino-libraries/SD)
+- Standart libraries from Arduino framework (Wire.h, SPI.h, libc, etc.)
+
+## Device Support
+- Arduino Mega2560
+- Arduino Due
+- SD cards (via SD & SPI Library)
+- RTC DS3231 (via Wire Library)
+- PS/2 Keyboard
+- LCD TFT (via UTFT Library)
 
 ## Examples
 You can compile examples from `/prog` with MicConAsm, copy `*.bin` files into SD and execute it with `io.bin` or `50.bin`

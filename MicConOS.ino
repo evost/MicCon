@@ -70,19 +70,12 @@ uint8_t getTemp() {
 	Wire.requestFrom(0x68, 2);
 	return ((((short)Wire.read() << 8) | (short)Wire.read()) >> 6) / 4;
 }
-uint32_t now() {
+uint16_t now() {
 	Wire.beginTransmission(0x68);
 	Wire.write(0);
 	Wire.endTransmission();
-	Wire.requestFrom(0x68, 7);
-	uint32_t ss = bcd2bin(Wire.read() & 0x7F);
-	ss = bcd2bin(Wire.read()) * 60;
-	ss += bcd2bin(Wire.read()) * 60 * 60;
-	Wire.read();
-	ss += bcd2bin(Wire.read()) * 60 * 60 * 24;
-	ss += bcd2bin(Wire.read()) * 60 * 60 * 24 * 30;
-	ss += bcd2bin(Wire.read()) * 60 * 60 * 24 * 30 * 365;
-	return ss;
+	Wire.requestFrom(0x68, 3);
+	return bcd2bin(Wire.read() & 0x7F) + bcd2bin(Wire.read()) * 60 + bcd2bin(Wire.read()) * 60 * 17;
 }
 uint32_t free_memory() {
 	volatile char top;
@@ -100,29 +93,36 @@ bool cmp(char* c1, char* c2) {
 	return true;
 }
 void status() {
-	char bar[32], me[7], sTime[3];
-	uint8_t mm, hh;
+	char bar[32] = "", me[7], sTime[3];
+	uint8_t mm, hh, d, m, y;
 	Wire.beginTransmission(0x68);
 	Wire.write(0x01);
 	Wire.endTransmission();
-	Wire.requestFrom(0x68, 7);
+	Wire.requestFrom(0x68, 6);
 	mm += bcd2bin(Wire.read());
 	hh += bcd2bin(Wire.read());
 	Wire.read();
-	strcpy(bar, itoa(hh, sTime, 10));
+	d += bcd2bin(Wire.read());
+	m += bcd2bin(Wire.read());
+	y += bcd2bin(Wire.read());
+	if (hh < 10) strcat(bar, "0");
+	strcat(bar, itoa(hh, sTime, 10));
 	strcat(bar, ":");
+	if (mm < 10) strcat(bar, "0");
 	strcat(bar, itoa(mm, sTime, 10));
 	strcat(bar, " ");
-	strcat(bar, itoa(bcd2bin(Wire.read()), sTime, 10));
+	if (d < 10) strcat(bar, "0");
+	strcat(bar, itoa(d, sTime, 10));
 	strcat(bar, ".");
-	strcat(bar, itoa(bcd2bin(Wire.read()), sTime, 10));
+	if (m < 10) strcat(bar, "0");
+	strcat(bar, itoa(m, sTime, 10));
 	strcat(bar, ".");
-	strcat(bar, itoa(bcd2bin(Wire.read()), sTime, 10));
+	if (y < 10) strcat(bar, "0");
+	strcat(bar, itoa(y, sTime, 10));
 	strcat(bar, " T=");
 	strcat(bar, itoa(getTemp(), sTime, 10));
 	strcat(bar, " RAM=");
 	strcat(bar, itoa(free_memory(), me, 10));
-	strcat(bar, "  ");
 	LCD.print(bar, 0, cursorYbar);
 }
 void ClrScr() {
@@ -627,7 +627,7 @@ void vi() {
 					k = 0;
 					++i;
 				}
-			} else 
+			} else
 				++k;
 		} else if (t == PS2_LEFTARROW) {
 			setc8(text_buf[page * 16 + i][k]);
@@ -943,17 +943,17 @@ int16_t math(char* c) {
 			bstack[stsz++] = registers[exp[0] - (exp[0] > 90 ? 97 : 65)];
 		} else if (isdigit(exp[0])) {
 			bstack[stsz++] = atoi(exp);
+		} else if (cmp(exp, "rand")) {
+			bstack[stsz++] = rand();
+		} else if (cmp(exp, "time")) {
+			bstack[stsz++] = now() % 0x8000;
+		} else if (cmp(exp, "free")) {
+			bstack[stsz++] = free_memory();
 		} else if (stsz > 0) {
-			if (cmp(exp, "rand")) {
-				bstack[stsz++] = rand();
-			} else if (cmp(exp, "time")) {
-				bstack[stsz++] = now();
-			} else if (cmp(exp, "free")) {
-				bstack[stsz++] = free_memory();
-			} else if (cmp(exp, "~")) {
-					bstack[stsz - 1] = ~bstack[stsz - 1];
+			if (cmp(exp, "~")) {
+				bstack[stsz - 1] = ~bstack[stsz - 1];
 			} else if (cmp(exp, "`")) {
-					bstack[stsz - 1] = -bstack[stsz - 1];
+				bstack[stsz - 1] = -bstack[stsz - 1];
 			} else if (stsz > 1) {
 				if (exp[1] == 0) {
 					if (exp[0] == '+')
@@ -986,16 +986,16 @@ int16_t math(char* c) {
 					}
 					--stsz;
 				} else if (cmp(exp, "<=")) {
-						bstack[stsz - 2] = (bstack[stsz - 2] <= bstack[stsz - 1] ? 1 : 0);
+					bstack[stsz - 2] = (bstack[stsz - 2] <= bstack[stsz - 1] ? 1 : 0);
 					--stsz;
 				} else if (cmp(exp, ">=")) {
-						bstack[stsz - 2] = (bstack[stsz - 2] >= bstack[stsz - 1] ? 1 : 0);
+					bstack[stsz - 2] = (bstack[stsz - 2] >= bstack[stsz - 1] ? 1 : 0);
 					--stsz;
 				} else if (cmp(exp, "<<")) {
-						bstack[stsz - 2] = bstack[stsz - 2] << bstack[stsz - 1];
+					bstack[stsz - 2] = bstack[stsz - 2] << bstack[stsz - 1];
 					--stsz;
 				} else if (cmp(exp, ">>")) {
-						bstack[stsz - 2] = bstack[stsz - 2] >> bstack[stsz - 1];
+					bstack[stsz - 2] = bstack[stsz - 2] >> bstack[stsz - 1];
 					--stsz;
 				} else if (cmp(exp, "pow")) {
 					bstack[stsz - 2] = pow(bstack[stsz - 2], bstack[stsz - 1]);
