@@ -27,37 +27,31 @@
 #define opening_error 6
 #define rewrite_error 7
 #define off_by_one 8
+#define lcd_font SmallFont
 #include <Arduino.h>
+#include <Wire.h>
 #include <timer-api.h>
 #include <SD.h>
 #include <UTFT.h>
 #include <PS2Keyboard.h>
-#include <Wire.h>
 #ifdef __arm__
-extern "C" char* sbrk(int incr);
+	extern "C" char* sbrk(int incr);
 #else //!__arm__
-extern char *__brkval;
+	extern char *__brkval;
 #endif
 char input_str[256];//current executable, 255 for name and path, and 1 for null terminator
 char directory[256] = "/";//working directory
 char path_buf[256];
-char work_file_name[256];//file with which the program works
+char work_file_name[13];//file with which the program works
 char comline[8];
-int8_t exe_code;//code returned by exe()
-int8_t delta = 4;//length of command, 1..4
-int8_t data[4];//a place for pre-loading from a file operation code and the three following bytes
-uint8_t BL = 51;//brightness of the backlight
-int16_t registers[256];
-uint8_t call = 0;//number of the next entry in the call stack
-uint16_t call_stack[255];//because the "call" can not be more than 255
-uint16_t cursorY;
-uint16_t cursorX;
+uint8_t BL = 255;//brightness of the backlight
+int16_t vars[26];
+int16_t cursorY;
+int16_t cursorX;
 uint16_t cursorYbar;
-File exe_file;
-File work_file;
 PS2Keyboard keyboard;
 UTFT LCD(ILI9486, 38, 39, 40, 41);
-extern uint8_t BigFont[];
+extern uint8_t lcd_font[];
 const char hexnums[17] = "0123456789ABCDEF";
 const unsigned int VGA_COLORS[16] = {VGA_BLACK, VGA_WHITE, VGA_RED, VGA_GREEN, VGA_BLUE, VGA_SILVER, VGA_GRAY, VGA_MAROON, VGA_YELLOW, VGA_OLIVE, VGA_LIME, VGA_AQUA, VGA_TEAL, VGA_NAVY, VGA_FUCHSIA, VGA_PURPLE};
 uint16_t dbytes(const uint8_t &a, const uint8_t &b) { return ((uint16_t)a << 8) | b; }
@@ -79,18 +73,23 @@ uint16_t now() {
 }
 uint32_t free_memory() {
 	volatile char top;
-#ifdef __arm__
-	return &top - reinterpret_cast<char*>(sbrk(0));
-#else //!__arm__
-	return __brkval ? &top - __brkval : &top - __malloc_heap_start;
-#endif
+	#ifdef __arm__
+		return &top - reinterpret_cast<char*>(sbrk(0));
+	#else //!__arm__
+		return __brkval ? &top - __brkval : &top - __malloc_heap_start;
+	#endif
 }
-bool cmp(char* c1, char* c2) {
-	for (uint8_t i = 0; i < 255; ++i) {
+bool cmp(const char* c1, const char* c2, const uint8_t &len = 255) {
+	for (uint8_t i = 0; i < len; ++i) {
 		if (c1[i] != c2[i]) return false;
 		if (c1[i] == 0) break;
 	}
 	return true;
+}
+void swapcolors() {
+	uint32_t col = LCD.getColor();
+	LCD.setColor(LCD.getBackColor());
+	LCD.setBackColor(col);
 }
 void status() {
 	char bar[32] = "", me[7], sTime[3];
@@ -99,12 +98,12 @@ void status() {
 	Wire.write(0x01);
 	Wire.endTransmission();
 	Wire.requestFrom(0x68, 6);
-	mm += bcd2bin(Wire.read());
-	hh += bcd2bin(Wire.read());
+	mm = bcd2bin(Wire.read());
+	hh = bcd2bin(Wire.read());
 	Wire.read();
-	d += bcd2bin(Wire.read());
-	m += bcd2bin(Wire.read());
-	y += bcd2bin(Wire.read());
+	d = bcd2bin(Wire.read());
+	m = bcd2bin(Wire.read());
+	y = bcd2bin(Wire.read());
 	if (hh < 10) strcat(bar, "0");
 	strcat(bar, itoa(hh, sTime, 10));
 	strcat(bar, ":");
@@ -132,20 +131,26 @@ void ClrScr() {
 	cursorY = 0;
 }
 void setc8(const char &k) {
-	char c[2] = {(k == 0 || k == PS2_DELETE) ? ' ' : k, 0};
-	if ((cursorX > LCD.getDisplayXSize() - LCD.getFontXsize()) || k == '\n') {
-		cursorX = 0;
-		cursorY += LCD.getFontYsize();
-		if (cursorY > LCD.getDisplayYSize() - 2 * LCD.getFontYsize()) {
-			while (keyboard.read() != PS2_ENTER) delay(16);
-			ClrScr();
-		}
-	} else if (k == PS2_DELETE) {
-		cursorX -= LCD.getFontXsize();
-		LCD.print(c, cursorX, cursorY);
+	if (k == PS2_BACKSPACE) {
+		if (cursorX == 0) {
+			cursorX = LCD.getDisplayXSize() - LCD.getFontXsize();
+			cursorY -= LCD.getFontYsize();
+		} else
+			cursorX -= LCD.getFontXsize();
+		LCD.printChar(' ', cursorX, cursorY);
 	} else {
-		LCD.print(c, cursorX, cursorY);
-		cursorX += LCD.getFontXsize();
+		if ((cursorX > LCD.getDisplayXSize() - LCD.getFontXsize()) || k == '\n') {
+			cursorX = 0;
+			cursorY += LCD.getFontYsize();
+			if (cursorY > LCD.getDisplayYSize() - 2 * LCD.getFontYsize()) {
+				while (keyboard.read() != PS2_ENTER) delay(16);
+				ClrScr();
+			}
+		}
+		if (k != '\n') {
+			LCD.printChar(k == 0 ? ' ' : k, cursorX, cursorY);
+			cursorX += LCD.getFontXsize();
+		}
 	}
 }
 void echo(const char* s, const uint8_t &len = 255) {
@@ -163,20 +168,54 @@ inline void setc16(const int16_t &k) {
 	char s[6];
 	echo(itoa(k, s, 10));
 }
-uint8_t getstr(char* str, const uint8_t &len = 255) {
+uint8_t getstr(char* str, const uint8_t &len = 255, const uint8_t &type = 1) {
 	setc8('>');
-	uint8_t i = 0, buf = 0;
+	uint8_t i = type - 1, buf = 0;
+	str[i] = 0;
 	while (buf != PS2_ENTER) {
+		swapcolors();
+		setc8(str[i]);
+		cursorX -= LCD.getFontXsize();
+		swapcolors();
 		while (!keyboard.available()) delay(16);
 		buf = keyboard.read();
-		if (buf == PS2_DELETE && i > 0) {
-			str[--i] = 0;
-			setc8(buf);
+		if (buf == PS2_BACKSPACE) {
+			if (i > 0 && str[i] == 0) {
+				setc8(' ');
+				i -= type;
+				str[i] = 0;
+				setc8(PS2_BACKSPACE);
+				setc8(PS2_BACKSPACE);
+			}
+		} else if (buf == PS2_LEFTARROW) {
+			if (i > 0) {
+				setc8(str[i]);
+				cursorX -= 2 * LCD.getFontXsize();
+				i -= type;
+			}
+		} else if (buf == PS2_RIGHTARROW) {
+			if (str[i] != 0) {
+				setc8(str[i]);
+				i += type;
+			}
+		} else if (buf == PS2_HOME) {
+			if (i > 0) {
+				setc8(str[i]);
+				cursorX -= (i + 1) * LCD.getFontXsize();
+				i = 0;
+			}
+		} else if (buf == PS2_END) {
+			setc8(str[i]);
+			while(str[i] != 0)
+				i += type;
 		} else if (buf == PS2_ENTER) {
-			str[i] = 0;
+			setc8(str[i]);
 			setc8('\n');
-		} else if (buf >= 32 && i < len && buf != PS2_DELETE) {
-			str[i++] = buf;
+		} else if (buf >= 32 && i < len * type) {
+			if (str[i] == 0)
+				str[i + type] = 0;
+			str[i] = buf;
+			i += type;
 			setc8(buf);
 		}
 	}
@@ -187,7 +226,7 @@ inline void getc16(int16_t &u) {
 	getstr(s, 5);
 	u = (int16_t)atoi(s);
 }
-uint8_t exe() {
+uint8_t exe(File &exe_file, File &work_file, int16_t* registers, int8_t* data, int8_t &delta, uint8_t &call, uint16_t* call_stack) {
 	uint8_t opcode = data[0] & 127;
 	int16_t swpbuf;
 	int16_t arg2 = 0;
@@ -289,8 +328,7 @@ uint8_t exe() {
 				getc16(registers[data[1] + i]);
 			break;
 		case 24:
-			for (int16_t i = 0; i < arg2; ++i)
-				registers[data[1] + i] = work_file.available() ? work_file.read() : 0;
+			getstr((char*)(registers + data[1]), arg2, 2);
 			break;
 		case 25:
 			for (int16_t i = 0; i < arg2; ++i)
@@ -377,67 +415,45 @@ uint8_t exe() {
 			delta = 2;
 			break;
 		case 47:
-			for (uint8_t i = 0; i < 255; ++i) {
-				work_file_name[i] = registers[data[1] + i];
-				if (registers[data[1] + i] == 0)
-					break;
-			}
-			if (!SD.exists(work_file_name))
-				return file_not_exist;
-			work_file = SD.open(work_file_name, FILE_READ);
-			if (!work_file)
-				return opening_error;
-			delta = 2;
-			break;
 		case 48:
-			for (uint8_t i = 0; i < 255; ++i) {
-				work_file_name[i] = registers[data[1] + i];
-				if (registers[data[1] + i] == 0)
-					break;
-			}
-			if (SD.exists(work_file_name) && !SD.remove(work_file_name))
-				return rewrite_error;
-			work_file = SD.open(work_file_name, FILE_WRITE);
-			if (!work_file)
-				return opening_error;
-			delta = 2;
-			break;
 		case 49:
-			for (uint8_t i = 0; i < 255; ++i) {
-				work_file_name[i] = registers[data[1] + i];
-				if (registers[data[1] + i] == 0)
-					break;
-			}
-			work_file = SD.open(work_file_name, FILE_WRITE);
-			if (!work_file)
-				return opening_error;
-			delta = 2;
-			break;
 		case 50:
-			for (uint8_t i = 0; i < 255; ++i) {
-				work_file_name[i] = registers[data[1] + i];
-				if (registers[data[1] + i] == 0)
-					break;
-			}
-			SD.mkdir(work_file_name);
-			delta = 2;
-			break;
 		case 51:
-			for (uint8_t i = 0; i < 255; ++i) {
-				work_file_name[i] = registers[data[1] + i];
-				if (registers[data[1] + i] == 0)
-					break;
-			}
-			SD.rmdir(work_file_name);
-			delta = 2;
-			break;
 		case 52:
-			for (uint8_t i = 0; i < 255; ++i) {
+			for (uint8_t i = 0; i <= 13 && registers[data[1] + i]; ++i)
 				work_file_name[i] = registers[data[1] + i];
-				if (registers[data[1] + i] == 0)
-					break;
+			strcpy(path_buf, directory);
+			strcat(path_buf, work_file_name);
+			switch(opcode) {
+			case 47:
+				if (!SD.exists(work_file_name))
+					return file_not_exist;
+				work_file = SD.open(work_file_name, FILE_READ);
+				if (!work_file)
+					return opening_error;
+				break;
+			case 48:
+				if (SD.exists(work_file_name) && !SD.remove(work_file_name))
+					return rewrite_error;
+				work_file = SD.open(work_file_name, FILE_WRITE);
+				if (!work_file)
+					return opening_error;
+				break;
+			case 49:
+				work_file = SD.open(work_file_name, FILE_WRITE);
+				if (!work_file)
+					return opening_error;
+				break;
+			case 50:
+				SD.mkdir(work_file_name);
+				break;
+			case 51:
+				SD.rmdir(work_file_name);
+				break;
+			case 52:
+				SD.remove(work_file_name);
+				break;
 			}
-			SD.remove(work_file_name);
 			delta = 2;
 			break;
 		case 53:
@@ -472,7 +488,7 @@ uint8_t exe() {
 	}
 	return exe_ok;
 }
-void printDirectory(File dir, int numTabs) {
+void printDirectory(File &dir, const uint8_t numTabs) {
 	while (true) {
 		File entry = dir.openNextFile();
 		if (!entry) break;
@@ -483,7 +499,7 @@ void printDirectory(File dir, int numTabs) {
 			echoln("/");
 			printDirectory(entry, numTabs + 1);
 		} else {
-			cursorX = LCD.getFontXsize() * 24;
+			cursorX = LCD.getFontXsize() * (LCD.getDisplayXSize() / LCD.getFontXsize() - 5);
 			setc16(entry.size());
 			setc8('\n');
 		}
@@ -491,226 +507,273 @@ void printDirectory(File dir, int numTabs) {
 	}
 }
 void vi() {
-	File edit;
-	char text_buf[128][16], t;
-	int8_t i = 0, k = 0, page = 0;//i-th string, k-th character
+	#define STRLEN 29
+	#define STRLEN_1 28
+	#ifdef __arm__
+		#define STRCOUNT 576
+		#define STRCOUNT_1 575
+	#else
+		#define STRCOUNT 64
+		#define STRCOUNT_1 63
+	#endif
+	uint8_t SHOWSTRCOUNT = (LCD.getDisplayYSize() / LCD.getFontYsize()) - 4;
+	uint8_t SHOWSTRCOUNT_1 = SHOWSTRCOUNT - 1;
+	uint8_t MAX_PAGES = STRCOUNT / SHOWSTRCOUNT;
+	uint8_t MAX_PAGES_1 = MAX_PAGES - 1;
+	char text_buf[STRCOUNT][STRLEN], t = 1;
+	//i-th string, k-th character
+	int16_t i = 0;
+	int8_t k = 0, page = 0;
 	if (SD.exists(input_str)) {
-		edit = SD.open(input_str, FILE_READ);
-		for (uint8_t ti = 0; ti <= 127; ++ti) {
-			t = 1;
-			for (uint8_t tk = 0; tk <= 15; ++tk)
-				if (edit.available() && t != 0) {
-					t = edit.read();
-					if (t < 32 || t == 127 || tk == 15) {
+		File exe_file = SD.open(input_str, FILE_READ);
+		for (int16_t ti = 0; ti < STRCOUNT; ++ti) {
+			for (uint8_t tk = 0, t = 1; tk < STRLEN; ++tk)
+				if (exe_file.available() && t) {
+					t = exe_file.read();
+					if (t < ' ' || tk == STRLEN_1) {
 						t = 0;
-						while (edit.peek() < 32 && edit.available())
-							edit.read();
+						while (exe_file.peek() < ' ' && exe_file.peek() != '\n' && exe_file.available())
+							exe_file.read();
 					}
 					text_buf[ti][tk] = t;
 				} else
 					text_buf[ti][tk] = 0;
 		}
-		edit.close();
+		exe_file.close();
 	} else
-		for (uint8_t ti = 0; ti <= 127; ++ti)
-			for (uint8_t tk = 0; tk <= 15; ++tk)
+		for (int16_t ti = 0; ti <= STRCOUNT_1; ++ti)
+			for (uint8_t tk = 0; tk <= STRLEN_1; ++tk)
 				text_buf[ti][tk] = 0;
 	bool refresh = true;
-	while (t != PS2_ESC) {
-		if (k > 15) {
-			text_buf[page * 16 + i][15] = 0;
-			k = 0;
-			++i;
+	while (true) {
+		if (k > 0)
+			if (text_buf[page * SHOWSTRCOUNT + i][k - 1] == 0) {
+				for (k = 0;k < STRLEN_1 && text_buf[page * SHOWSTRCOUNT + i][k]; ++k);
+			}
+		if (k > STRLEN_1) {
+			if (page * SHOWSTRCOUNT + i < STRCOUNT_1) {
+				k = 0;
+				++i;
+			} else
+				k = STRLEN_1;
 		} else if (k < 0) {
-			if (i > 0) {
+			if (i > 0 || page > 0) {
 				--i;
-				for (k = 0; k < 15 && text_buf[page * 16 + i][k] != 0; ++k);
+				for (k = 0; k <= STRLEN_1 && text_buf[page * SHOWSTRCOUNT + i][k]; ++k);
 			} else
 				k = 0;
 		}
-		if (i > 15 || i < 0 || refresh) {
+		if (i > SHOWSTRCOUNT_1 || i < 0 || page < 0 || page > MAX_PAGES_1 || refresh) {
 			refresh = false;
 			if (i < 0) {
 				if (page > 0) {
 					--page;
-					i = 15;
+					i = SHOWSTRCOUNT_1;
 				} else
 					i = 0;
 			}
-			else if (i > 15) {
-				i = 15;
-				if (page < 7) {
+			else if (i > SHOWSTRCOUNT_1) {
+				if (page < MAX_PAGES_1) {
 					++page;
 					i = 0;
+					k = 0;
 				} else
-					i = 15;
+					i = SHOWSTRCOUNT_1;
 			}
 			ClrScr();
-			echo("ESC-exit TAB-save PAGE=");
-			setc16(page);
-			setc8('\n');
-			setc8('\n');
-			for (uint8_t ti = 0; ti <= 15; ++ti) {
-				setc16(page * 16 + ti);
-				if (page * 16 + ti < 100)
+			for (int16_t ti = 0; ti <= SHOWSTRCOUNT_1; ++ti) {
+				setc16(page * SHOWSTRCOUNT + ti);
+				if (page * SHOWSTRCOUNT + ti < 100)
 					setc8(' ');
-				if (page * 16 + ti < 10)
+				if (page * SHOWSTRCOUNT + ti < 10)
 					setc8(' ');
-				echo(": ");
-				for (uint8_t tk = 0; tk <= 15; ++tk)
-					if (text_buf[page * 16 + ti][tk] == 0) {
+				setc8(':');
+				for (uint8_t tk = 0; tk <= STRLEN_1; ++tk)
+					if (text_buf[page * SHOWSTRCOUNT + ti][tk] == 0) {
 						setc8('\n');
 						break;
 					} else
-						setc8(text_buf[page * 16 + ti][tk]);
+						setc8(text_buf[page * SHOWSTRCOUNT + ti][tk]);
 			}
+			echoln(input_str);
+			setc8(page + (page < 10 ? 48 : (65 - 10)));
+			setc8(':');
+			echo("q-exit w-save");
 		}
-		if (text_buf[page * 16 + i][k] == 0)
-			for (; k > 0 && text_buf[page * 16 + i][k - 1] == 0; --k);
-		cursorX = (k + 5) * LCD.getFontXsize();
-		cursorY = (i + 2) * LCD.getFontYsize();
-		setc8('_');
+		cursorX = (k + 4) * LCD.getFontXsize();
+		cursorY = i * LCD.getFontYsize();
+		{
+			swapcolors();
+			setc8(text_buf[page * SHOWSTRCOUNT + i][k]);
+			swapcolors();
+		}
 		cursorX -= LCD.getFontXsize();
 		while (!keyboard.available()) delay(16);
 		t = keyboard.read();
-		if (t == PS2_TAB) {
-			SD.remove(input_str);
-			edit = SD.open(input_str, FILE_WRITE);
-			for (uint8_t ti = 0; ti <= 127; ++ti)
-				for (uint8_t tk = 0; tk <= 15; ++tk)
-					if (text_buf[ti][tk] != 0)
-						edit.write(text_buf[ti][tk]);
-					else {
-						if (tk != 0 || text_buf[ti - 1][0] != 0)
-							edit.write('\n');
-						tk = 16;
-					}
-			edit.close();
-		} else if (t == PS2_ENTER) {
-			setc8(text_buf[page * 16 + i][k]);
-			++i;
-			if (text_buf[127][0] == 0) {
-				for (int8_t ti = 127; ti >= i + 1; --ti)
-					for (int8_t tk = 15; tk >= 0; --tk)
-						text_buf[ti][tk] = text_buf[ti - 1][tk];
-				for (int8_t tk = 0; tk < 15 - k; ++tk) {
-					text_buf[page * 16 + i][tk] = text_buf[page * 16 + i - 1][k + tk + 1];
-					text_buf[page * 16 + i - 1][k + tk + 1] = 0;
-				}
-				for (int8_t tk = 15 - k; tk <= 15; ++tk)
-					text_buf[page * 16 + i][tk] = 0;
-				refresh = true;
-			}
-			k = 0;
-		} else if (t == PS2_DELETE) {
-			setc8(text_buf[page * 16 + i][k]);
-			cursorX -= LCD.getFontXsize();
-			if (text_buf[page * 16 + i][0] == 0) {
-				for (int8_t ti = page * 16 + i; ti <= 126; ++ti)
-					for (int8_t tk = 0; tk <= 15; ++tk)
-						text_buf[ti][tk] = text_buf[ti + 1][tk];
-				for (int8_t tk = 0; tk <= 15; ++tk)
-					text_buf[127][tk] = 0;
-				refresh = true;
-			} else if (k > 0) {
-				cursorX -= LCD.getFontXsize();
-				for (int8_t tk = k; tk <= 15; ++tk) {
-					text_buf[page * 16 + i][tk - 1] = text_buf[i][tk];
-					setc8(text_buf[page * 16 + i][tk]);
-				}
-			}
-			--k;
-		} else if (t == PS2_RIGHTARROW) {
-			setc8(text_buf[page * 16 + i][k]);
-			if (text_buf[page * 16 + i][k] == 0) {
-				if (page < 7 || i < 15) {
-					k = 0;
-					++i;
-				}
-			} else
-				++k;
-		} else if (t == PS2_LEFTARROW) {
-			setc8(text_buf[page * 16 + i][k]);
-			--k;
-		} else if (t == PS2_DOWNARROW) {
-			if (page < 7 || i < 15) {
-				setc8(text_buf[page * 16 + i][k]);
-				++i;
-			}
-		} else if (t == PS2_UPARROW) {
-			if (page > 0 || i > 0) {
-				setc8(text_buf[page * 16 + i][k]);
-				--i;
-			}
-		} else if (t == PS2_HOME) {
-			setc8(text_buf[page * 16 + i][k]);
-			i = 0;
-		} else if (t == PS2_END) {
-			setc8(text_buf[page * 16 + i][k]);
-			i = 15;
-		} else if (t == PS2_PAGEDOWN) {
-			setc8(text_buf[page * 16 + i][k]);
-			if (page < 7) {
-				++page;
-				refresh = true;
-			}
-			else
-				i = 15;
-		} else if (t == PS2_PAGEUP) {
-			setc8(text_buf[page * 16 + i][k]);
-			if (page > 0) {
-				--page;
-				refresh = true;
-			}
-			else
-				i = 0;
-		} else if (text_buf[page * 16 + i][14] == 0) {
-			for (int8_t tk = 14; tk > k; --tk)
-				text_buf[page * 16 + i][tk] = text_buf[page * 16 + i][tk - 1];
-			text_buf[page * 16 + i][k] = t;
-			for (int8_t tk = k; tk < 15; ++tk)
-				setc8(text_buf[page * 16 + i][tk]);
+		if (text_buf[page * SHOWSTRCOUNT + i][STRLEN - 2] == 0 && t >= ' ' && t != PS2_BACKSPACE) {
+			for (uint8_t tk = STRLEN - 2; tk >= k + 1; --tk)
+				text_buf[page * SHOWSTRCOUNT + i][tk] = text_buf[page * SHOWSTRCOUNT + i][tk - 1];
+			text_buf[page * SHOWSTRCOUNT + i][k] = t;
+			for (uint8_t tk = k; tk < STRLEN_1; ++tk)
+				setc8(text_buf[page * SHOWSTRCOUNT + i][tk]);
 			++k;
+		} else {
+			setc8(text_buf[page * SHOWSTRCOUNT + i][k]);
+			if (t == PS2_ESC) {
+				cursorX = LCD.getFontXsize() * 2;
+				cursorY = LCD.getFontYsize() * SHOWSTRCOUNT;
+				echo("             ");
+				cursorX = LCD.getFontXsize() * 2;
+				//cursorY = LCD.getFontYsize() * SHOWSTRCOUNT;
+				getstr(comline, 7);
+				if (comline[0] != 0) {
+					if (cmp(comline, "w")) {
+						SD.remove(input_str);
+						File exe_file = SD.open(input_str, FILE_WRITE);
+						int16_t p = 0;
+						for (int16_t ti = STRCOUNT; ti > 0; --ti)
+							if (text_buf[ti - 1][0] != 0) {
+								p = ti;
+								break;
+							}
+						for (int16_t ti = 0; ti < p; ++ti)
+							for (uint8_t tk = 0; tk < STRLEN_1; ++tk)
+								if (text_buf[ti][tk])
+									exe_file.write(text_buf[ti][tk]);
+								else {
+									exe_file.write('\n');
+									tk = STRLEN;
+								}
+						exe_file.close();
+					} else if (cmp(comline, "q")) {
+						break;
+					} else {
+						page = (atoi(comline) / SHOWSTRCOUNT) % MAX_PAGES;
+						i = atoi(comline) % SHOWSTRCOUNT;
+					}
+				}
+				refresh = true;
+			} else if (t == PS2_ENTER) {
+				if (page * SHOWSTRCOUNT + i < STRCOUNT_1) {
+					++i;
+					if (text_buf[STRCOUNT_1][0] == 0) {
+						for (int16_t ti = STRCOUNT_1; ti >= page * SHOWSTRCOUNT + i + 1; --ti)
+							for (uint8_t tk = STRLEN_1 + 1; tk > 0; --tk)
+								text_buf[ti][tk - 1] = text_buf[ti - 1][tk - 1];
+						for (uint8_t tk = 0; tk <= STRLEN_1 - k; ++tk) {
+							text_buf[page * SHOWSTRCOUNT + i][tk] = text_buf[page * SHOWSTRCOUNT + i - 1][k + tk];
+							text_buf[page * SHOWSTRCOUNT + i - 1][k + tk] = 0;
+						}
+						for (uint8_t tk = STRLEN_1 - k + 1; tk <= STRLEN_1; ++tk)
+							text_buf[page * SHOWSTRCOUNT + i][tk] = 0;
+						refresh = true;
+					}
+					k = 0;
+				}
+			} else if (t == PS2_BACKSPACE || t == PS2_DELETE) {
+				if (t == PS2_DELETE && PS2_BACKSPACE != PS2_DELETE) {
+					if (text_buf[page * SHOWSTRCOUNT + i][k] == 0 || k >= STRLEN_1)
+						continue;
+					else
+						++k;
+				} else
+					cursorX -= LCD.getFontXsize();
+				if (text_buf[page * SHOWSTRCOUNT + i][0] == 0) {
+					for (int16_t ti = page * SHOWSTRCOUNT + i; ti <= STRCOUNT - 2; ++ti)
+						for (uint8_t tk = 0; tk <= STRLEN_1; ++tk)
+							text_buf[ti][tk] = text_buf[ti + 1][tk];
+					for (uint8_t tk = 0; tk <= STRLEN_1; ++tk)
+						text_buf[STRCOUNT_1][tk] = 0;
+					refresh = true;
+				} else if (k > 0) {
+					cursorX -= LCD.getFontXsize();
+					for (uint8_t tk = k; tk <= STRLEN_1; ++tk) {
+						text_buf[page * SHOWSTRCOUNT + i][tk - 1] = text_buf[page * SHOWSTRCOUNT + i][tk];
+						setc8(text_buf[page * SHOWSTRCOUNT + i][tk]);
+					}
+				}
+				--k;
+			} else if (t == PS2_RIGHTARROW) {
+				if (text_buf[page * SHOWSTRCOUNT + i][k])
+					++k;
+				else if (page * SHOWSTRCOUNT + i != STRCOUNT_1){
+					++i;
+					k = 0;
+				}
+			} else if (t == PS2_LEFTARROW) {
+				--k;
+			} else if (t == PS2_DOWNARROW) {
+				if (page * SHOWSTRCOUNT + i < STRCOUNT_1) ++i;
+			} else if (t == PS2_UPARROW) {
+				if (page * SHOWSTRCOUNT + i > 0) --i;
+			} else if (t == PS2_HOME) {
+				if (i)
+					i = 0;
+				else
+					k = 0;
+			} else if (t == PS2_END) {
+				if (i != SHOWSTRCOUNT_1)
+					i = SHOWSTRCOUNT_1;
+				else
+				for (k = 0;k < STRLEN_1 && text_buf[page * SHOWSTRCOUNT + i][k]; ++k);
+			} else if (t == PS2_PAGEDOWN) {
+				if (page < MAX_PAGES_1) {
+					++page;
+					refresh = true;
+				} else {
+					i = SHOWSTRCOUNT_1;
+				for (k = 0;k < STRLEN_1 && text_buf[page * SHOWSTRCOUNT + i][k]; ++k);
+				}
+			} else if (t == PS2_PAGEUP) {
+				if (page > 0) {
+					--page;
+					refresh = true;
+				} else {
+					i = 0;
+					k = 0;
+				}
+			} else if (t == PS2_TAB) {
+				for (k = 0;k < STRLEN_1 && text_buf[page * SHOWSTRCOUNT + i][k]; ++k);
+			}
 		}
 	}
 	ClrScr();
 }
 void asm_lite() {
-	File source, bin;
 	char op[4], arg1[7], arg2[7], t;
 	uint16_t labels[32], sz = 0;
 	uint8_t opcode, i;
 	if (SD.exists(input_str)) {
-		source = SD.open(input_str, FILE_READ);
-		input_str[0] = input_str[0] == '~' ? '_' : '~';
+		File exe_file = SD.open(input_str, FILE_READ);
+		input_str[0] = (input_str[0] == '~' ? '_' : '~');
 		SD.remove(input_str);
-		bin = SD.open(input_str, FILE_WRITE);
-		while (source.available()) {
+		File work_file = SD.open(input_str, FILE_WRITE);
+		while (exe_file.available()) {
 			t = ' ';
 			i = 0;
-			while (isspace(t) && source.available())
-				t = source.read();
-			while (!isspace(t) && source.available()) {
+			while (isspace(t) && exe_file.available())
+				t = exe_file.read();
+			while (!isspace(t) && exe_file.available()) {
 				op[i] = t;
-				t = source.read();
+				t = exe_file.read();
 				++i;
 			}
 			op[i] = 0;
-			while (isspace(t) && source.available() && t != '\n')
-				t = source.read();
+			while (isspace(t) && exe_file.available() && t != '\n')
+				t = exe_file.read();
 			i = 0;
-			while (!isspace(t) && source.available()) {
+			while (!isspace(t) && exe_file.available()) {
 				arg1[i] = t;
-				t = source.read();
+				t = exe_file.read();
 				++i;
 			}
 			arg1[i] = 0;
-			while (isspace(t) && source.available() && t != '\n')
-				t = source.read();
+			while (isspace(t) && exe_file.available() && t != '\n')
+				t = exe_file.read();
 			i = 0;
-			while (!isspace(t) && source.available()) {
+			while (!isspace(t) && exe_file.available()) {
 				arg2[i] = t;
-				t = source.read();
+				t = exe_file.read();
 				++i;
 			}
 			arg2[i] = 0;
@@ -839,72 +902,76 @@ void asm_lite() {
 					opcode = 60;
 				//else if (cmp(op, "dat"))
 				//	opcode = 61;
+				else {
+					echoln("Unknown op");
+					opcode = 0;
+				}
 				if (opcode <= 4) {
-					bin.write(opcode);
+					work_file.write(opcode);
 					sz += 1;
 				} else if (opcode <= 5) {
-					bin.write(opcode);
+					work_file.write(opcode);
 					for (uint8_t k = 0; k < 6; ++k) {
 						arg1[k] = arg1[k + 1];
 						arg2[k] = arg2[k + 1];
 					}
-					bin.write(atoi(arg1));
-					bin.write(atoi(arg2));
+					work_file.write(atoi(arg1));
+					work_file.write(atoi(arg2));
 					sz += 3;
 				} else if (opcode <= 36) {
 					if (isdigit(arg2[0])) {
-						bin.write(opcode);
+						work_file.write(opcode);
 						for (uint8_t k = 0; k < 6; ++k)
 							arg1[k] = arg1[k + 1];
-						bin.write(atoi(arg1));
-						bin.write(atoi(arg2) >> 8);
-						bin.write(atoi(arg2) & 255);
+						work_file.write(atoi(arg1));
+						work_file.write(atoi(arg2) >> 8);
+						work_file.write(atoi(arg2) & 255);
 						sz += 4;
 					} else {
-						bin.write(opcode + 128);
+						work_file.write(opcode + 128);
 						for (uint8_t k = 0; k < 6; ++k) {
 							arg1[k] = arg1[k + 1];
 							arg2[k] = arg2[k + 1];
 						}
-						bin.write(atoi(arg1));
-						bin.write(atoi(arg2));
+						work_file.write(atoi(arg1));
+						work_file.write(atoi(arg2));
 						sz += 3;
 					}
 				} else if (opcode <= 43) {
 					if (isdigit(arg1[0])) {
-						bin.write(opcode);
-						bin.write(atoi(arg1) >> 8);
-						bin.write(atoi(arg1) & 255);
+						work_file.write(opcode);
+						work_file.write(atoi(arg1) >> 8);
+						work_file.write(atoi(arg1) & 255);
 						sz += 3;
 					} else {
-						bin.write(opcode + 128);
+						work_file.write(opcode + 128);
 						for (uint8_t k = 0; k < 6; ++k)
 							arg1[k] = arg1[k + 1];
-						bin.write(atoi(arg1));
+						work_file.write(atoi(arg1));
 						sz += 2;
 					}
 				} else if (opcode <= 52) {
-					bin.write(opcode);
+					work_file.write(opcode);
 					for (uint8_t k = 0; k < 6; ++k)
 						arg1[k] = arg1[k + 1];
-					bin.write(atoi(arg1));
+					work_file.write(atoi(arg1));
 					sz += 2;
 				} else if (opcode <= 56) {
-					bin.write(opcode);
+					work_file.write(opcode);
 					for (uint8_t k = 0; k < 6; ++k) {
 						arg1[k] = arg1[k + 1];
 						arg2[k] = arg2[k + 1];
 					}
-					bin.write(atoi(arg1));
-					bin.write(labels[atoi(arg2)] >> 8);
-					bin.write(labels[atoi(arg2)] & 255);
+					work_file.write(atoi(arg1));
+					work_file.write(labels[atoi(arg2)] >> 8);
+					work_file.write(labels[atoi(arg2)] & 255);
 					sz += 3;
 				} else if (opcode <= 58) {
-					bin.write(opcode);
+					work_file.write(opcode);
 					for (uint8_t k = 0; k < 6; ++k)
 						arg1[k] = arg1[k + 1];
-					bin.write(labels[atoi(arg1)] >> 8);
-					bin.write(labels[atoi(arg1)] & 255);
+					work_file.write(labels[atoi(arg1)] >> 8);
+					work_file.write(labels[atoi(arg1)] & 255);
 					sz += 2;
 				} else if (opcode <= 60) {
 					for (uint8_t k = 0; k < 6; ++k)
@@ -913,8 +980,9 @@ void asm_lite() {
 				}
 			}
 		}
-		source.close();
-		bin.close();
+		exe_file.close();
+		work_file.close();
+		echoln(input_str);
 	}
 }
 bool get_file_name(const bool &m = false) {
@@ -928,8 +996,8 @@ bool get_file_name(const bool &m = false) {
 	echoln("File not exist");
 	return false;
 }
-int16_t math(char* c) {
-#define STACK_SIZE 32
+int16_t math(const char* c) {
+	#define STACK_SIZE 32
 	uint8_t i = 0, q, stsz = 0;
 	char exp[8];
 	uint16_t bstack[STACK_SIZE];
@@ -940,7 +1008,7 @@ int16_t math(char* c) {
 			exp[q++] = c[i++];
 		exp[q] = 0;
 		if (isalpha(exp[0]) && exp[1] == 0) {
-			bstack[stsz++] = registers[exp[0] - (exp[0] > 90 ? 97 : 65)];
+			bstack[stsz++] = vars[exp[0] - (exp[0] > 90 ? 97 : 65)];
 		} else if (isdigit(exp[0])) {
 			bstack[stsz++] = atoi(exp);
 		} else if (cmp(exp, "rand")) {
@@ -1031,7 +1099,6 @@ void get_file_str(File &ofile, char* c) {
 	c[i] = 0;
 }
 void shell() {
-	File ofile;
 	if (input_str[0] == 0)
 		return;
 	uint8_t i = 0, clnum;
@@ -1050,9 +1117,9 @@ void shell() {
 	input_str[i - clnum] = 0;
 	if (cmp(comline, "ls")) {
 		if (get_file_name(true)) {
-			ofile = SD.open(input_str);
-			printDirectory(ofile, 0);
-			ofile.close();
+			File entry = SD.open(input_str);
+			printDirectory(entry, 0);
+			entry.close();
 		}
 	} else if (cmp(comline, "uptime")) {
 		setc16(millis() / 1000);
@@ -1065,14 +1132,15 @@ void shell() {
 			asm_lite();
 	} else if (cmp(comline, "hex")) {
 		if (get_file_name(true)) {
-			ofile = SD.open(input_str, FILE_READ);
-			while (ofile.available()) {
+			clnum = 0;
+			File exe_file = SD.open(input_str, FILE_READ);
+			while (exe_file.available()) {
 				if (clnum % 8 == 0) {
 					setc8(hexnums[clnum >> 4]);
 					setc8(hexnums[clnum & 15]);
 					echo(" | ");
 				}
-				i = ofile.read();
+				i = exe_file.read();
 				setc8(hexnums[i >> 4]);
 				setc8(hexnums[i & 15]);
 				setc8(' ');
@@ -1080,16 +1148,15 @@ void shell() {
 					setc8('\n');
 				++clnum;
 			}
-			ofile.close();
+			exe_file.close();
 			setc8('\n');
 		}
 	} else if (cmp(comline, "cat")) {
 		if (get_file_name(true)) {
-			ofile = SD.open(input_str, FILE_READ);
-			while (ofile.available())
-				setc8(ofile.read());
-			ofile.close();
-			setc8('\n');
+			File exe_file = SD.open(input_str, FILE_READ);
+			while (exe_file.available())
+				setc8(exe_file.read());
+			exe_file.close();
 		}
 	} else if (cmp(comline, "mkdir")) {
 		get_file_name();
@@ -1099,8 +1166,8 @@ void shell() {
 		SD.rmdir(input_str);
 	} else if (cmp(comline, "mk")) {
 		get_file_name();
-		File temp = SD.open(input_str, FILE_WRITE);
-		temp.close();
+		File work_file = SD.open(input_str, FILE_WRITE);
+		work_file.close();
 	} else if (cmp(comline, "rm")) {
 		get_file_name();
 		SD.remove(input_str);
@@ -1113,12 +1180,12 @@ void shell() {
 				strcpy(path_buf, directory);
 			strcat(path_buf, input_str);
 			if (SD.exists(path_buf)) {
-				File temp = SD.open(path_buf);
-				if (temp.isDirectory())
+				File work_file = SD.open(path_buf);
+				if (work_file.isDirectory())
 					strcpy(directory, path_buf);
 				else
 					echoln("Isn't dir");
-				temp.close();
+				work_file.close();
 			} else
 				echoln("Isn't exist");
 		} else
@@ -1144,48 +1211,56 @@ void shell() {
 	} else if (cmp(comline, "let")) {
 		i = input_str[0] - (input_str[0] > 90 ? 97 : 65);
 		input_str[0] = ' ';
-		registers[i] = math(input_str);
+		vars[i] = math(input_str);
 	} else if (cmp(comline, "echo")) {
 		if (input_str[0] == '"') {
 			for (i = 1; i < 255 && input_str[i] != '"'; ++i)
 				input_str[i - 1] = input_str[i];
 			input_str[i - 1] = 0;
 		} else if (isalpha(input_str[0]) && input_str[1] == 0) {
-			itoa(registers[input_str[0] - (input_str[0] > 90 ? 97 : 65)], input_str, 10);
+			itoa(vars[input_str[0] - (input_str[0] > 90 ? 97 : 65)], input_str, 10);
 		} else {
 			itoa(math(input_str), input_str, 10);
 		}
 		echoln(input_str);
 	} else if (cmp(comline, "input")) {
 		if (isalpha(input_str[0]) && input_str[1] == 0)
-			getc16(registers[input_str[0] - (input_str[0] > 90 ? 97 : 65)]);
+			getc16(vars[input_str[0] - (input_str[0] > 90 ? 97 : 65)]);
 		else
 			echoln("not a var");
 	} else if (cmp(comline, "sh")) {
 		if (get_file_name(true)) {
-			ofile = SD.open(input_str, FILE_READ);
-			while (ofile.available()) {
+			File exe_file = SD.open(input_str, FILE_READ);
+			while (exe_file.available()) {
 				i = 0;
-				get_file_str(ofile, input_str);
+				get_file_str(exe_file, input_str);
 				if (cmp(input_str, "end")) break;
-				if (cmp(input_str, "goto")) {
-					get_file_str(ofile, input_str);
-					ofile.seek(0);
-					while (i != math(input_str) && ofile.available())
-						if (ofile.read() == '\n') ++i;
-				} else if (cmp(input_str, "if")) {
-					get_file_str(ofile, input_str);
-					if (math(input_str)) {
-						get_file_str(ofile, input_str);
-						ofile.seek(0);
-						while (i != math(input_str) && ofile.available())
-							if (ofile.read() == '\n') ++i;
-					} else
-						get_file_str(ofile, input_str);
+				if (cmp(input_str, "sh ", 3)) continue;
+				if (cmp(input_str, "goto ", 5)) {
+					uint8_t p = 4;
+					while (p < 255) {
+						input_str[p - 4] = input_str[p + 1];
+						++p;
+					}
+					p = math(input_str);
+					exe_file.seek(0);
+					while (i != p && exe_file.available())
+						if (exe_file.read() == '\n') ++i;
+				} else if (cmp(input_str, "endif")) {
+					;
+				} else if (cmp(input_str, "if ", 3)) {
+					uint8_t p = 2;
+					while (p < 255) {
+						input_str[p - 2] = input_str[p + 1];
+						++p;
+					}
+					if (!math(input_str)) {
+						while(!cmp(input_str, "endif")) get_file_str(exe_file, input_str);
+					}
 				} else
 					shell();
 			}
-			ofile.close();
+			exe_file.close();
 		}
 	} else if (cmp(comline, "man") || cmp(comline, "help") || cmp(comline, "?")) {
 		echoln("asm F    compile file");
@@ -1195,7 +1270,7 @@ void shell() {
 		echoln("cd D     change working dir");
 		echoln("clear    clear the display");
 		echoln("color FB set font/back colors");
-		echoln("date M   set M = DDMMYYHHMM");
+		echoln("date M   set M = DDMMYYhhmm");
 		echoln("date     echo datetime");
 		echoln("echo E   print expression");
 		echoln("input V  set var = input");
@@ -1216,27 +1291,41 @@ void shell() {
 		echoln("vi F     text editor");
 		echoln("' stuff   remark/comment");
 	} else if (cmp(comline, "date")) {
-		Wire.beginTransmission(0x68);
-		Wire.write(0x01);
-		Wire.write(dec2bcd((input_str[8] -48) * 10 + input_str[9] -48));
-		Wire.write(dec2bcd((input_str[6] -48) * 10 + input_str[7] -48) & 0b10111111);
-		Wire.write(0x00);
-		Wire.write(dec2bcd((input_str[0] -48) * 10 + input_str[1] -48));
-		Wire.write(dec2bcd((input_str[2] -48) * 10 + input_str[3] -48));
-		Wire.write(dec2bcd((input_str[4] -48) * 10 + input_str[5] -48));
-		Wire.endTransmission();
-		status();
+		if (input_str[0] == 0)
+			echoln("DDMMYYhhmm");
+		else {
+			Wire.beginTransmission(0x68);
+			Wire.write(0x01);
+			Wire.write(dec2bcd((input_str[8] -48) * 10 + input_str[9] -48));
+			Wire.write(dec2bcd((input_str[6] -48) * 10 + input_str[7] -48) & 0b10111111);
+			Wire.write(0x00);
+			Wire.write(dec2bcd((input_str[0] -48) * 10 + input_str[1] -48));
+			Wire.write(dec2bcd((input_str[2] -48) * 10 + input_str[3] -48));
+			Wire.write(dec2bcd((input_str[4] -48) * 10 + input_str[5] -48));
+			Wire.endTransmission();
+			status();
+		}
 	} else if (cmp(comline, "color")) {
-		LCD.setColor(VGA_COLORS[input_str[0] % 16]);
-		LCD.setBackColor(VGA_COLORS[input_str[1] % 16]);
+		if (strlen(input_str) == 2) {
+			LCD.setColor(VGA_COLORS[(input_str[0] <= 57 ? input_str[0] - 48 : (input_str[0] <= 90 ? input_str[0] - 55 : input_str[0] - 87)) % 16]);
+			LCD.setBackColor(VGA_COLORS[(input_str[1] <= 57 ? input_str[1] - 48 : (input_str[1] <= 90 ? input_str[1] - 55 : input_str[1] - 87)) % 16]);
+		} else
+			echoln("Incorrect");
 	} else if (cmp(comline, "run")) {
+		File work_file;
+		int8_t exe_code;//code returned by exe()
+		int8_t delta = 4;//length of command, 1..4
+		int8_t data[4];//a place for pre-loading from a file operation code and the three following bytes
+		uint8_t call = 0;//number of the next entry in the call stack
+		int16_t registers[256];
+		uint16_t call_stack[255];//because the "call" can not be more than 255
 		if (get_file_name(true)) {
-			exe_file = SD.open(input_str, FILE_READ);
+			File exe_file = SD.open(input_str, FILE_READ);
 			if (exe_file) {
 				while (exe_file.available()) {
 					for (i = 0; i < 4; ++i)
 						data[i] = exe_file.available() ? exe_file.read() : 0;
-					exe_code = exe();
+					exe_code = exe(exe_file, work_file, registers, data, delta, call, call_stack);
 					if (exe_code == exe_end)
 						break;
 					else if (exe_code != exe_ok) {
@@ -1260,15 +1349,20 @@ void setup() {
 	pinMode(pin_SD, OUTPUT);
 	pinMode(pin_BL, OUTPUT);
 	LCD.InitLCD();
-	LCD.setFont(BigFont);
+	LCD.setFont(lcd_font);
 	LCD.setColor(VGA_LIME);
 	analogWrite(pin_BL, BL);
 	keyboard.begin(ps2key_data_pin, ps2key_int_pin);
 	Wire.begin();
 	cursorYbar = LCD.getDisplayYSize() - LCD.getFontYsize();
 	ClrScr();
+	Serial.begin(9600);
 	timer_init_ISR_1Hz(TIMER_DEFAULT);
-	echoln("MicConOS 0.9b");
+	echo("MicConOS 1.0b ");
+	setc16(LCD.getDisplayXSize() / LCD.getFontXsize());
+	setc8('x');
+	setc16(LCD.getDisplayYSize() / LCD.getFontYsize());
+	setc8('\n');
 	if (!SD.begin(pin_SD))
 		echoln("SD fail");
 }
