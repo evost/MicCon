@@ -21,11 +21,11 @@ MicConOS requires the following libraries
 - LCD TFT (via UTFT Library)
 
 ## Examples
-You can compile examples from `/prog` with MicConAsm, copy `*.bin` files into SD and execute it with `io.bin` or `50.bin`
+You can compile examples from `/docs/progs` with MicConAsm or `asm`, copy `*.bin` files into SD and execute it with `io.bin` or `50.bin`
 
 ## Info
-General description of system you can read in `paradigm.md`.
-Assembly language table you can find in `assembly_language.md`.
+General description of system you can read in `/docs/paradigm.md`.
+Assembly language table you can find in `/docs/assembly_language.md`.
 More details and hardware description on the project page on [Arduino Project Hub](https://create.arduino.cc/projecthub/evost/miccon-vm-and-translator-4a072a)
 
 ## License
